@@ -1,0 +1,42 @@
+﻿
+
+
+private _Compilers: array of string;
+private Compilers_need_init := true;
+private procedure LoadCompilers(lns: array of string);
+begin
+  if lns=nil then exit;
+  var value: array of string;
+  value := lns;
+  _Compilers := value;
+  Compilers_need_init := false;
+end;
+private procedure SaveCompilers(sw: System.IO.StreamWriter);
+begin
+  sw.WriteLine('# Compilers');
+  var value := _Compilers;
+  foreach var l in value do
+    sw.WriteLine(l);
+end;
+private function GetCompilers: array of string;
+begin
+  if Compilers_need_init then
+  begin
+    var def_folder := 'C:\Program Files (x86)\PascalABC.NET';
+    if System.IO.Directory.Exists(def_folder) then
+      Result := | def_folder+'\pabcnetcclear.exe' | else
+      Result := WindowChooseCompiler.Create(nil).AskUser;
+    _Compilers := Result;
+    Compilers_need_init := false;
+    FastSave(SaveCompilers);
+  end else
+    Result := _Compilers;
+end;
+public property Compilers: array of string read GetCompilers write
+begin
+  _Compilers := value;
+  Compilers_need_init := false;
+  FastSave(SaveCompilers);
+end;
+
+
