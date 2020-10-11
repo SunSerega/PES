@@ -1,0 +1,4 @@
+*.pdb
+*.pcu
+*.exe
+/Settings.dat

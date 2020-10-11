@@ -1,0 +1,23 @@
+
+
+
+# UsedModules
+ChooseCompiler
+
+# Type
+array of string
+
+# InitDefault
+var def_folder := 'C:\Program Files (x86)\PascalABC.NET';
+if System.IO.Directory.Exists(def_folder) then
+  Result := | def_folder+'\pabcnetcclear.exe' | else
+  Result := WindowChooseCompiler.Create(nil).AskUser;
+
+# Load
+value := lns;
+
+# Save
+foreach var l in value do
+  sw.WriteLine(l);
+
+
