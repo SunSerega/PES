@@ -80,6 +80,7 @@ type
     
     public function IsError := (err<>nil) or otp.ToLower.Contains('err');
     public function IsModule := self.is_module;
+    public function ExecTestReasonable := not IsError and not IsModule;
     
     public function GetShortDescription: string; override;
     begin
@@ -133,6 +134,7 @@ type
     private procedure Test;
     begin
       var ad := System.AppDomain.CreateDomain($'Execution of "{fname}"');
+      
       var ec := new CrossDomainExceptionContainer;
       ad.SetData('ec', ec);
       ad.SetData('fname', System.IO.Path.ChangeExtension(System.IO.Path.Combine(dir, fname), '.exe'));
@@ -171,7 +173,7 @@ type
     end;
     public constructor(ctr: CompResult);
     begin
-      if ctr.IsError then raise new System.InvalidOperationException;
+      if not ctr.ExecTestReasonable then raise new System.InvalidOperationException;
       self.dir    := ctr.dir;
       self.fname  := ctr.fname;
       Test;

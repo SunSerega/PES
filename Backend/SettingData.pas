@@ -9,7 +9,6 @@ uses MessageBoxing;
 
 type
   Settings = sealed class
-    public const SettingFile = 'Settings.dat';
     private fname: string;
     
     private static enc := new System.Text.UTF8Encoding(true);
@@ -45,7 +44,6 @@ type
       begin
         _curr := new Settings;
         need_curr_init := false;
-        
       end;
       Result := _curr;
     end;
@@ -55,7 +53,7 @@ type
       need_curr_init := false;
     end;
     
-    public constructor(fname: string := SettingFile);
+    public constructor(fname: string := 'Settings.dat');
     begin
       self.fname := fname;
       
