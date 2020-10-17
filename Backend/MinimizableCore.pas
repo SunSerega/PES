@@ -8,201 +8,48 @@ type
   
   MinimizableNode = abstract class
     
-    public function Enmr: sequence of MinimizableNode; abstract;
+    public function Enmr: sequence of MinimizableNode;
     
-    public property ReadableName: string read $'Node[{self.GetType}]'; virtual;
-    public function ToString: string; override := ReadableName;
+    protected invulnerable: boolean;
+    public property IsInvulnerable: boolean read invulnerable; virtual;
+    
+    public function Cleanup(is_invalid: MinimizableNode->boolean): MinimizableNode; virtual :=
+    is_invalid(self) ? nil : self;
+    
+    public procedure UnWrapTo(new_base_dir: string; is_valid_node: MinimizableNode->boolean); abstract;
+    
+    public function ToString: string; override := $'Node[{self.GetType}]';
     
   end;
   
   MinimizableItem = abstract class(MinimizableNode)
     
-    public function Enmr: sequence of MinimizableNode; override := |self as MinimizableNode|;
-    
   end;
   MinimizableList = abstract class(MinimizableNode)
     protected items := new List<MinimizableNode>;
     
-    public function Enmr: sequence of MinimizableNode; override;
+    public function Cleanup(is_invalid: MinimizableNode->boolean): MinimizableNode; override;
     begin
-      yield self;
-      foreach var item in items do
-        yield sequence item.Enmr;
+      if is_invalid(self) then exit;
+      Result := self;
+      for var i := 0 to items.Count-1 do
+        items[i] := items[i].Cleanup(is_invalid);
+      items.RemoveAll(item->item=nil);
     end;
     
-    public function DoAllMinimizing(counter: PersentDoneCounter; test_case: MinimizableNode->boolean): boolean;
+    public procedure UnWrapTo(new_base_dir: string; is_valid_node: MinimizableNode->boolean); override :=
+    foreach var i in items do
+      if is_valid_node(i) then
+        i.UnWrapTo(new_base_dir, is_valid_node);
     
-  end;
-  
-  ShadowMinimizableListBase = abstract class(MinimizableNode)
-    private org: MinimizableList;
-    public static default_batch_size := System.Environment.ProcessorCount+1;
-    
-    public constructor(l: MinimizableList) := self.org := l;
-    private constructor := raise new System.InvalidOperationException;
-    
-    public function UnWrap: MinimizableList; abstract;
-    
-  end;
-  
-  ShadowOrderedMinimizableList = sealed class(ShadowMinimizableListBase)
-    private removed_range: IntRange;
-    
-    public constructor(l: MinimizableList; removed_range: IntRange);
+    public procedure Add(i: MinimizableNode);
     begin
-      inherited Create(l);
-      
-      {$ifdef DEBUG}
-      if removed_range.Low<0 then
-        raise new System.ArgumentOutOfRangeException('Low');
-      if removed_range.High>=l.items.Count then
-        raise new System.ArgumentOutOfRangeException('High');
-      {$endif DEBUG}
-      
-      self.removed_range := removed_range;
-    end;
-    private constructor := raise new System.InvalidOperationException;
-    
-    public static function MakeBatch(l: MinimizableList): array of ShadowMinimizableListBase;
-    begin
-      Result := new ShadowMinimizableListBase[Min(default_batch_size, l.items.Count)];
-      var uneven_c: integer;
-      var c := System.Math.DivRem(l.items.Count, Result.Length, uneven_c);
-      var n := 0;
-      for var i := 0 to Result.Length-1 do
-      begin
-        var next_n := n + c + integer(i<uneven_c);
-        Result[i] := new ShadowOrderedMinimizableList(l, n..next_n-1);
-        n := next_n;
-      end;
+      self.items += i;
+      if i.IsInvulnerable then
+        self.invulnerable := true;
     end;
     
-    public function Enmr: sequence of MinimizableNode; override;
-    begin
-      yield org;
-      for var i := 0 to removed_range.Low-1 do
-        yield sequence org.items[i].Enmr;
-      for var i := removed_range.High+1 to org.items.Count-1 do
-        yield sequence org.items[i].Enmr;
-    end;
-    
-    public property ReadableName: string read $'Ordered from {org.items[removed_range.Low].ReadableName} to {org.items[removed_range.High].ReadableName} (c={removed_range.Count})'; override;
-    
-    public function UnWrap: MinimizableList; override;
-    begin
-      org.items.RemoveRange(removed_range.Low, removed_range.Count);
-      Result := org;
-      self.org := nil;
-    end;
-    
-  end;
-  ShadowDisorderedMinimizableList = sealed class(ShadowMinimizableListBase)
-    private removed_items: HashSet<MinimizableNode>;
-    
-    public constructor(l: MinimizableList; removed_inds: array of integer);
-    begin
-      inherited Create(l);
-      
-      {$ifdef DEBUG}
-      for var i := 0 to removed_inds.Length-1 do
-        if not (removed_inds[i] in 0..l.items.Count) then
-          raise new System.ArgumentOutOfRangeException($'inds[{i}]');
-      {$endif DEBUG}
-      
-      self.removed_items := new HashSet<MinimizableNode>(removed_inds.Length);
-      foreach var ind in removed_inds do
-        self.removed_items += l.items[ind];
-    end;
-    private constructor := raise new System.InvalidOperationException;
-    
-    private static function GetLayerCount(l: integer; c: integer): integer;
-    begin
-      if l<1 then raise new System.ArgumentException;
-      case l of
-        1: Result := c;
-        2: Result := (c-1)*c div 2;
-        else
-        begin
-          Result := 0;
-          for var i := 1 to c-l+1 do
-            Result += GetLayerCount(l-1, c-i);
-        end;
-      end;
-    end;
-    public static function MakeBatch(l: MinimizableList): array of ShadowMinimizableListBase;
-    const max_batches = 100;
-    begin
-      var max_c := max_batches*default_batch_size;
-      var items_c := l.items.Count;
-      
-      var c := 0;
-      var last_layer := items_c-1;
-      
-      for var i := 1 to last_layer do
-      begin
-        var new_c := c + GetLayerCount(i, items_c);
-        
-        if new_c>=max_c then
-        begin
-          last_layer := i - integer(c>max_c);
-//          c := max_c; //ToDo Если частичный уровень будет считаться
-          break;
-        end;
-        
-        c := new_c;
-      end;
-      
-      Result := new ShadowMinimizableListBase[c];
-      
-      var ind := 0;
-      for var i := 1 to last_layer do
-      begin
-        var rem_inds := new List<integer>(i);
-        
-        while true do
-          if rem_inds.Count<i then
-            rem_inds += rem_inds.Count=0 ? 0 : rem_inds.Last+1 else
-          begin
-            Result[ind] := new ShadowDisorderedMinimizableList(l, rem_inds.ToArray);
-            ind += 1;
-            
-            while true do
-            begin
-              var last_ind := rem_inds[rem_inds.Count-1] + 1;
-              if last_ind=items_c-(i-rem_inds.Count) then
-              begin
-                rem_inds.RemoveLast;
-                if rem_inds.Count=0 then break;
-              end else
-              begin
-                rem_inds[rem_inds.Count-1] := last_ind;
-                break;
-              end;
-            end;
-            
-            if rem_inds.Count=0 then break;
-          end;
-        
-      end;
-      
-    end;
-    
-    public function Enmr: sequence of MinimizableNode; override;
-    begin
-      yield org;
-      for var i := 0 to org.items.Count-1 do
-        if not removed_items.Contains(org.items[i]) then
-          yield sequence org.items[i].Enmr;
-    end;
-    
-    public property ReadableName: string read $'Disordered ' + removed_items.Select(item->item.ReadableName).JoinToString; override;
-    
-    public function UnWrap: MinimizableList; override;
-    begin
-      org.items.RemoveAll(item->item in self.removed_items);
-      Result := org;
-      self.org := nil;
-    end;
+    public function Minimize(counter: PersentDoneCounter; test_case: function(descr: string; report: boolean; n: MinimizableNode; is_valid: MinimizableNode->boolean): boolean): boolean;
     
   end;
   
@@ -210,78 +57,234 @@ implementation
 
 uses ThreadUtils;
 
-function EnmrMinimizingStrats(l: MinimizableList): sequence of array of ShadowMinimizableListBase;
+function MinimizableNode.Enmr: sequence of MinimizableNode;
 begin
-  yield l=nil ? nil : ShadowOrderedMinimizableList    .MakeBatch(l);
-  yield l=nil ? nil : ShadowDisorderedMinimizableList .MakeBatch(l);
+  yield self;
+  var prev := new List<MinimizableList>;
+  if self is MinimizableList(var l) then prev += l;
+  
+  while prev.Count<>0 do
+  begin
+    var curr := new List<MinimizableList>(prev.Count);
+    
+    foreach var l in prev do
+      foreach var i in l.items do
+      begin
+        yield i;
+        if i is MinimizableList(var sub_l) then
+          curr += sub_l;
+      end;
+    
+    prev := curr;
+  end;
+  
 end;
 
-function MinimizableList.DoAllMinimizing(counter: PersentDoneCounter; test_case: MinimizableNode->boolean): boolean;
+function SmartEnmrLayers(c: integer): sequence of integer;
 begin
-  var minimization_any_res := false;
-  
-  counter.SplitTasks(2, (task_ind, counter)->
-  case task_ind of
+  if c<1 then exit;
+  yield c;
+  var best_point := Max(1, c div MaxThreadBatch);
+  if best_point<>c then
+  begin
+    yield best_point;
+    if best_point<>1 then
+      yield 1;
+  end;
+  for var l := c-1 downto 1 do
+    if l<>best_point then
+      yield l;
+end;
+
+/// l=кол-во элементов которые убирают
+/// c=кол-во всех элементов
+function EnmrRemInds(l, c: integer): sequence of array of integer;
+begin
+  if l<0 then raise new System.ArgumentException;
+  case l of
     
     0:
-    begin
-      var batch_enmr: IEnumerator<array of ShadowMinimizableListBase> := EnmrMinimizingStrats(self).GetEnumerator;
-      
-      counter.SplitTasks(EnmrMinimizingStrats(nil).Count, (batch_ind, counter)->
-      begin
-        if not batch_enmr.MoveNext then raise new System.InvalidOperationException;
-        var batch := batch_enmr.Current;
-        
-        var batch_res := SimpleTask&<boolean>.ExecMany(counter, batch, (l, counter)->
-          new SimpleTask<boolean>(()->
-          begin
-            Result := test_case(l);
-            counter.ManualAddValue(1);
-          end)
-        );
-        if batch_res.Any(res_ok->res_ok) then
-          minimization_any_res := true else
-          exit;
-        
-        var items_backup := self.items.ToList;
-        
-        for var i := batch.Length-1 downto 0 do
-          if batch_res[i] then
-            batch[i].UnWrap;
-        
-        if not test_case(self) then
-        begin
-          self.items := items_backup;
-          
-          for var i := batch.Length-1 downto 0 do
-            if batch_res[i] then
-            begin
-              items_backup := self.items.ToList;
-              batch[i].UnWrap;
-              if not test_case(self) then self.items := items_backup;
-            end;
-          
-        end;
-        
-      end);
-      
-    end;
+    yield new integer[0];
     
     1:
+    for var ind := 0 to c-1 do
+      yield |ind|;
+    
+    else
+    for var bl_size := l to c do
+      foreach var insides in EnmrRemInds(l-2, bl_size-2) do
+        for var shift := 0 to bl_size-1 do
+          for var bl_ind := 0 to (c-shift) div bl_size - 1 do
+          begin
+            var bl_start := shift + bl_ind*bl_size;
+            var res := new integer[l];
+            res[0] := bl_start;
+            res[l-1] := bl_start+bl_size-1;
+            for var i := 0 to l-3 do
+              res[i+1] := insides[i]+bl_start+1;
+            yield res;
+          end;
+    
+  end;
+end;
+
+function ReorderForAsyncUse<T>(self: sequence of T; can_use: T->boolean): sequence of T; extensionmethod;
+const max_skipped = 256*256;
+begin
+  var skipped := new Queue<T>;
+  
+  while true do
+  begin
+    
+    foreach var el in self do
+      if can_use(el) then
+        yield el else
+      begin
+        if skipped.Count>=max_skipped then
+          yield skipped.Dequeue;
+        skipped += el;
+      end;
+    
+    if skipped.Count=0 then break;
+    yield default(T);
+    self := skipped;
+    skipped := new Queue<T>;
+  end;
+  
+end;
+
+const max_tests_before_giveup = 128;
+function MinimizableList.Minimize(counter: PersentDoneCounter; test_case: function(descr: string; report: boolean; n: MinimizableNode; is_valid: MinimizableNode->boolean): boolean): boolean;
+begin
+  Result := false;
+  
+  var removable_left := self.Enmr.Where(n->not n.IsInvulnerable).ToList;
+  if removable_left.Count=0 then
+  begin
+    counter.ManualAddValue(1);
+    exit;
+  end;
+  var scale := 1 / removable_left.Count;
+  
+  var safely_removed := new HashSet<MinimizableNode>;
+  var test_case_without := function(type_descr: string; report: boolean; without: HashSet<MinimizableNode>): boolean ->
+  begin
+    
+    //ToDo #2328
+    var is_valid_node := function(n: MinimizableNode): boolean ->
     begin
-      var sub_lists := self.items.OfType&<MinimizableList>.ToList;
-      
-      counter.SplitTasks(sub_lists.Count, (sub_list_ind, counter)->
-        if sub_lists[sub_list_ind].DoAllMinimizing(counter, test_case) then
-          minimization_any_res := true
-      );
-      
+      Result := true;
+      if safely_removed.Contains(n) then Result := false;
+      if without.Contains(n) then Result := false;
     end;
     
-    else raise new System.InvalidOperationException;
-  end);
+    var sb := new StringBuilder;
+    sb += type_descr;
+    sb += ' - (';
+    sb += removable_left.Count.ToString;
+    sb += '-';
+    sb += without.Count.ToString;
+    sb += ' = ';
+    sb += (removable_left.Count - without.Count).ToString;
+    sb += ') [';
+    sb += without.Take(5).JoinToString(', ');
+    if without.Count>5 then
+      sb += ', ...';
+    sb += ']';
+    
+    Result := test_case(sb.ToString, report, self, is_valid_node);
+  end;
   
-  Result := minimization_any_res;
+  while true do
+  begin
+    var inds_usages := new integer[removable_left.Count];
+    var c := removable_left.Count;
+    
+    var cts := new System.Threading.CancellationTokenSource;
+    var new_removed := new List<HashSet<MinimizableNode>>;
+    
+    var since_stable := 0;
+    var since_stable_lock := new object;
+    
+    foreach var remove_set in ExecMany(
+      SmartEnmrLayers(c).SelectMany(l->EnmrRemInds(l, c))
+      .ReorderForAsyncUse(
+        inds->inds.All(ind->inds_usages[ind]=0)
+      ),
+      inds->
+      if inds<>nil then
+      begin
+        lock inds_usages do foreach var ind in inds do inds_usages[ind] += 1;
+        
+        Result := new SimpleTask<HashSet<MinimizableNode>>(()->
+        begin
+          var curr_removed := new HashSet<MinimizableNode>(inds.Length);
+          foreach var ind in inds do
+            curr_removed += removable_left[ind];
+          
+          if test_case_without('test', false, curr_removed) then
+          begin
+            cts.Cancel;
+            counter.ManualAddValue(curr_removed.Count*scale*0.5);
+            Result := curr_removed;
+          end else
+          begin
+            lock since_stable_lock do
+              since_stable += 1;
+            if since_stable>=max_tests_before_giveup then
+              cts.Cancel;
+          end;
+          
+          lock inds_usages do foreach var ind in inds do inds_usages[ind] -= 1;
+        end);
+      end,
+      cts.Token
+    ) do
+    begin
+      if remove_set=nil then continue;
+      new_removed += remove_set;
+    end;
+    
+    if new_removed.Count=0 then break;
+    Result := true;
+    
+    var all_remove_set := new HashSet<MinimizableNode>(new_removed.Sum(remove_set->remove_set.Count));
+    foreach var remove_set in new_removed do
+      foreach var n in remove_set do
+        all_remove_set += n;
+    
+    if test_case_without('stable', true, all_remove_set) then
+    begin
+      counter.ManualAddValue(all_remove_set.Count*scale*0.5);
+      foreach var n in all_remove_set do
+      begin
+        safely_removed += n;
+        foreach var sub_n in n.Enmr do
+          removable_left.Remove(n);
+      end;
+    end else
+      foreach var remove_set in new_removed do
+      begin
+        if not test_case_without('unstable', true, remove_set) then
+        begin
+          counter.ManualAddValue(remove_set.Count*scale*-0.5);
+          continue;
+        end;
+        
+        counter.ManualAddValue(remove_set.Count*scale*0.5);
+        foreach var n in remove_set do
+        begin
+          safely_removed += n;
+          foreach var sub_n in n.Enmr do
+            removable_left.Remove(n);
+        end;
+        
+      end;
+    
+  end;
+  
+  counter.ManualAddValue(removable_left.Count * scale);
+  self.Cleanup(n->safely_removed.Contains(n));
 end;
 
 end.

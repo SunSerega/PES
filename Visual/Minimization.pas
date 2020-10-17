@@ -12,6 +12,7 @@ uses PersentDone      in '..\Backend\PersentDone';
 uses MinimizableCore  in '..\Backend\MinimizableCore';
 
 uses MFolder          in '..\Backend\Minimizables\MFolder';
+uses MFile            in '..\Backend\Minimizables\MFile';
 
 uses VUtils;
 uses Common;
@@ -20,6 +21,8 @@ type
   
   MinimizationStagePart = abstract class
     public any_change := false;
+    public event StagePartStarted: Action0;
+    public event NewStableBuild: string->();
     
     private stage_part_dir: string;
     private expected_tr: TestResult;
@@ -32,47 +35,24 @@ type
     end;
     private constructor := raise new System.InvalidOperationException;
     
-    public function Execute(last_source_dir: string): string; abstract;
-    
-    public function MakeUIElement: UIElement; abstract;
-    
-  end;
-  FolderMSP = sealed class(MinimizationStagePart)
-    
-    private procedure CopyContent(dir1, dir2: string; mask: MinimizableNode);
-    begin
-      foreach var n in mask.Enmr do
-        match n with
-          
-          MFolderContents(var mdir):
-            System.IO.Directory.CreateDirectory(
-              System.IO.Path.Combine(dir2, mdir.Path)
-            );
-          
-          MFolderFile(var mfile):
-            System.IO.File.Copy(
-              System.IO.Path.Combine(dir1, mfile.Path),
-              System.IO.Path.Combine(dir2, mfile.Path)
-            );
-          
-          else raise new System.NotSupportedException(n.GetType.ToString);
-        end;
-    end;
-    
-    public function Execute(last_source_dir: string): string; override;
+    protected function MakeMinimizable(dir: string): MinimizableList; abstract;
+    public function Execute(last_source_dir: string): string;
     begin
       Result := last_source_dir;
-      if System.IO.Directory.EnumerateFileSystemEntries(last_source_dir).Count<2 then exit;
+      
+      var StagePartStarted := self.StagePartStarted;
+      if StagePartStarted<>nil then StagePartStarted();
       
       var temp_source_origin := System.IO.Path.Combine(stage_part_dir, '0');
       CopyDir(last_source_dir, temp_source_origin);
-      var minimizable := new MFolderContents(temp_source_origin);
+      var minimizable := MakeMinimizable(temp_source_origin);
       
       var prev_names := new HashSet<string>;
       var ensure_unique_name := function(name: string): string->
       begin
         Result := name;
-        if prev_names.Add(Result) then exit;
+        lock prev_names do
+          if prev_names.Add(Result) then exit;
         
         var i := 2;
         while true do
@@ -85,15 +65,14 @@ type
         
       end;
       
-      if minimizable.DoAllMinimizing(counter, n->
+      if minimizable.Minimize(counter, (descr, report, n, is_valid_node)->
       begin
         Result := false;
-        if not n.Enmr.OfType&<MFolderFile>.Any(mfile->mfile.Path=self.expected_tr.TargetFName) then exit;
         
         var curr_test_dir := System.IO.Path.Combine(
-          self.stage_part_dir, ensure_unique_name(n.ReadableName)
+          self.stage_part_dir, ensure_unique_name(descr)
         );
-        CopyContent(temp_source_origin, curr_test_dir, n);
+        n.UnWrapTo(curr_test_dir, is_valid_node);
         
         var ctr := new CompResult(expected_tr, curr_test_dir);
         if self.expected_tr is CompResult(var expected_ctr) then
@@ -107,27 +86,72 @@ type
           end;
         end;
         
+        if Result and report then self.NewStableBuild(curr_test_dir);
       end) then
       begin
         Result := System.IO.Path.Combine(stage_part_dir, '0-res');
-        CopyContent(temp_source_origin, Result, minimizable);
+        minimizable.UnWrapTo(Result, n->true);
       end;
       
     end;
     
+    public function MakeUIElement: UIElement; abstract;
+    
+  end;
+  FolderMSP = sealed class(MinimizationStagePart)
+    
+    protected function MakeMinimizable(dir: string): MinimizableList; override :=
+    new MFolderContents(dir, expected_tr.TargetFName);
+    
     public function MakeUIElement: UIElement; override;
     begin
-      var res := new TextBlock;
+      var res := new Grid;
       Result := res;
-      res.Text := stage_part_dir;
-      var ToDo := 0;
+      
+      var pb := new SmoothProgressBar;
+      res.Children.Add(pb);
+      pb.SnapMax(1);
+      counter.ValueChanged += v->pb.Dispatcher.Invoke(()->pb.AnimateVal(v));
+      
+      var tb := new TextBlock;
+      res.Children.Add(tb);
+      tb.HorizontalAlignment  := System.Windows.HorizontalAlignment.Center;
+      tb.VerticalAlignment    := System.Windows.VerticalAlignment.Center;
+      tb.Margin := new Thickness(5,2,5,2);
+      tb.Text := $'File removal';
+      
+    end;
+    
+  end;
+  FileMSP = sealed class(MinimizationStagePart)
+    
+    protected function MakeMinimizable(dir: string): MinimizableList; override :=
+    new MFileBatch(dir);
+    
+    public function MakeUIElement: UIElement; override;
+    begin
+      var res := new Grid;
+      Result := res;
+      
+      var pb := new SmoothProgressBar;
+      res.Children.Add(pb);
+      pb.SnapMax(1);
+      counter.ValueChanged += v->pb.Dispatcher.Invoke(()->pb.AnimateVal(v));
+      
+      var tb := new TextBlock;
+      res.Children.Add(tb);
+      tb.HorizontalAlignment  := System.Windows.HorizontalAlignment.Center;
+      tb.VerticalAlignment    := System.Windows.VerticalAlignment.Center;
+      tb.Margin := new Thickness(5,2,5,2);
+      tb.Text := $'Line removal';
       
     end;
     
   end;
   
   MinimizationStage = sealed class(Border)
-    public event StagePartDone: string->();
+    public event StagePartStarted: Action0;
+    public event NewStableBuild: string->();
     
     private stage_num: integer;
     private stage_dir: string;
@@ -145,10 +169,10 @@ type
         System.Windows.Visibility.Collapsed;
     end;
     
-    public constructor(stage_num: integer; work_dir: string);
+    public constructor(stage_num: integer);
     begin
       self.stage_num := stage_num;
-      self.stage_dir := System.IO.Path.Combine(work_dir, stage_num.ToString);
+      self.stage_dir := System.IO.Path.Combine(test_dir, stage_num.ToString);
       
       self.BorderBrush := new SolidColorBrush(Colors.Black);
       self.BorderThickness := new Thickness(1);
@@ -180,18 +204,22 @@ type
     
     private function ApplyMSP(last_source_dir: string; msp: MinimizationStagePart): string;
     begin
+      msp.NewStableBuild += dir->self.NewStableBuild(dir);
       Dispatcher.Invoke(()->
       begin
         self.stage_parts_sp.Children.Add(msp.MakeUIElement);
         Application.Current.MainWindow.Title := $'PES: Stage={stage_num}, stage_part={msp.GetType.Name}';
       end);
-      var new_source_dir := msp.Execute(last_source_dir);
-      if last_source_dir<>new_source_dir then
+      msp.StagePartStarted += ()->
       begin
-        StagePartDone(new_source_dir);
-        Result := new_source_dir;
-      end else
-        Result := last_source_dir;
+        var StagePartStarted := self.StagePartStarted;
+        if StagePartStarted<>nil then
+        begin
+          self.StagePartStarted -= StagePartStarted;
+          StagePartStarted();
+        end;
+      end;
+      Result := msp.Execute(last_source_dir);
     end;
     
     public function Execute(last_source_dir: string; expected_tr: TestResult): string;
@@ -199,14 +227,14 @@ type
       Result := last_source_dir;
       
       Result := ApplyMSP(Result, new FolderMSP(self.stage_dir, expected_tr));
-      var ToDo := 0;
+      Result := ApplyMSP(Result, new   FileMSP(self.stage_dir, expected_tr));
       
     end;
     
   end;
   
   MinimizationLog = sealed class(Border)
-    public event StagePartDone: string->();
+    public event NewStableBuild: string->();
     
     public constructor(inital_state_dir: string; expected_tr: TestResult);
     begin
@@ -234,19 +262,21 @@ type
       try
         var i := 1;
         var last_source_dir := inital_state_dir;
-        var work_dir := System.IO.Path.GetDirectoryName(last_source_dir);
         var prev_ms := default(MinimizationStage);
         
         while true do
         begin
+          var ToDo_issue := 0;
+          var sp := sp; //ToDo
+          
           var ms := sp.Dispatcher.Invoke(()->
           begin
-            Result := new MinimizationStage(i, work_dir);
+            Result := new MinimizationStage(i);
             if prev_ms<>nil then Result.sr.SnapX(w->Min(prev_ms.sr.ExtentSize.Width, w));
-            sp.Children.Add(Result);
           end);
           
-          ms.StagePartDone += dir->self.StagePartDone(dir);
+          ms.StagePartStarted += ()->sp.Dispatcher.Invoke(()->sp.Children.Add(ms));
+          ms.NewStableBuild += dir->self.NewStableBuild(dir);
           var new_source_dir := ms.Execute(last_source_dir, expected_tr);
           
           Dispatcher.Invoke(()->
@@ -291,7 +321,7 @@ type
     
     public constructor(get_lines_target: ()->real);
     begin
-      self.BeginAnimation(LinesLeftProp, new SmoothDoubleAnimation(get_lines_target(), get_lines_target, 0, 0.5));
+      self.BeginAnimation(LinesLeftProp, new SmoothDoubleAnimation(get_lines_target(), get_lines_target, 0, 0.4));
       
       self.BorderBrush := new SolidColorBrush(Colors.Black);
       self.BorderThickness := new Thickness(1);
@@ -459,7 +489,7 @@ type
       begin
         var log := new MinimizationLog(inital_state_dir, tr);
         self.Children.Add(log);
-        log.StagePartDone += dir->
+        log.NewStableBuild += dir->
         begin
           lines_count := CountLines(dir);
 //          lines_count *= 1.2;

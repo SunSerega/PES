@@ -223,6 +223,15 @@ type
         Min(child.DesiredSize.Height, availableSize.Height)
       );
       
+//      lock output do
+//      begin
+//        Writeln((child as ContentPresenter).Content?.GetType);
+//        Writeln(availableSize);
+//        Writeln(child.DesiredSize);
+//        Writeln(ExtentSize);
+//        Writeln('='*30);
+//      end;
+      
       lock self do
       begin
         
@@ -247,6 +256,21 @@ type
         SmoothY ? AnimYLimit : child.DesiredSize.Height
       );
       
+//      if Result <> availableSize then
+//        child.Measure(Result);
+    end;
+    
+    protected function ArrangeOverride(finalSize: Size): Size; override;
+    begin
+      Result := finalSize;
+      
+      var child := GetVisualChild(0) as UIElement;
+      if child=nil then exit;
+      
+      child.Arrange(new Rect(0,0,
+        SmoothX ? AnimXLimit : finalSize.Width,
+        SmoothY ? AnimYLimit : finalSize.Height
+      ));
     end;
     
   end;

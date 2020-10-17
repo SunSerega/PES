@@ -7,50 +7,46 @@ uses MinimizableCore  in '..\MinimizableCore';
 type
   
   MFolderFile = sealed class(MinimizableItem)
-    private fname: string;
+    private fname, rel_fname: string;
     
-    public property Path: string read fname;
+    public constructor(fname, base_dir, target: string);
+    begin
+      self.fname := fname;
+      self.rel_fname := GetRelativePath(fname, base_dir);
+      self.invulnerable := self.rel_fname=target;
+    end;
     
-    public constructor(fname: string) :=
-    self.fname := fname;
+    public procedure UnWrapTo(new_base_dir: string; is_valid_node: MinimizableNode->boolean); override :=
+    System.IO.File.Copy(fname, System.IO.Path.Combine(new_base_dir, rel_fname));
     
-    public property ReadableName: string read $'File[{self.Path}]'; override;
+    public function ToString: string; override := $'File[{self.rel_fname}]';
     
   end;
   
   MFolderContents = sealed class(MinimizableList)
-    private dir: string;
+    private rel_dir: string;
     
-    public property Path: string read dir;
-    
-    public constructor(dir, base_dir: string);
+    public constructor(dir, base_dir, target: string);
     begin
-      self.dir := GetRelativePath(dir, base_dir);
-      
-      foreach var fname in EnumerateFiles(dir) do
-        items.Add(new MFolderFile(GetRelativePath(fname, base_dir)));
+//      self.dir := dir;
+      self.rel_dir := GetRelativePath(dir, base_dir);
       
       foreach var dname in EnumerateDirectories(dir) do
-        items.Add(new MFolderContents(dname, base_dir));
+        self.Add( new MFolderContents(dname, base_dir, target) );
+      
+      foreach var fname in EnumerateFiles(dir) do
+        self.Add( new MFolderFile(fname, base_dir, target) );
       
     end;
-    public constructor(dir: string) := Create(dir, dir);
+    public constructor(dir, target: string) := Create(dir, dir, target);
     
-    public property ReadableName: string read $'Dir[{self.Path}]'; override;
-    
-    public function ContainsFile(fname: string): boolean;
+    public procedure UnWrapTo(new_base_dir: string; is_valid_node: MinimizableNode->boolean); override;
     begin
-      var ind := fname.IndexOf('/');
-      if ind=-1 then
-        self.items.OfType&<MFolderFile>.Any(mfile->mfile.Path=fname) else
-      begin
-        var dir_name := fname.Remove(ind);
-        Result :=
-          self.items.OfType&<MFolderContents>
-          .First(mdir->mdir.Path=dir_name)
-          .ContainsFile(fname.Remove(0, ind+1));
-      end;
+      System.IO.Directory.CreateDirectory( System.IO.Path.Combine(new_base_dir, rel_dir) );
+      inherited;
     end;
+    
+    public function ToString: string; override := $'Dir[{self.rel_dir}]';
     
   end;
   

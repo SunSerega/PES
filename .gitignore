@@ -2,3 +2,4 @@
 *.pcu
 *.exe
 /Settings.dat
+/Log

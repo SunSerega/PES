@@ -2,7 +2,7 @@
 
 type
   PersentDoneCounter = sealed class
-    public event ValueChanged: procedure(dv: real);
+    public event ValueChanged: procedure(new_v: real);
     public event SubCountersAdded: procedure(pos, size: real; count: integer);
     private ValueAdded: real->();
     private val: real;
@@ -36,6 +36,12 @@ type
     
     public procedure SplitTasks(count: integer; proc: (integer, PersentDoneCounter)->());
     begin
+      if count=0 then
+      begin
+        self.ManualAddValue(1);
+        exit;
+      end;
+      
       var SubCountersAdded := self.SubCountersAdded;
       if SubCountersAdded<>nil then SubCountersAdded(0,1, count);
       

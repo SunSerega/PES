@@ -18,6 +18,8 @@ type
   
   /// Все тесты (компиляция, запуск) для комбинации файла и компилятора
   BucketBatchTestViewer = sealed class(Border)
+    private static test_mres := new Queue<System.Threading.ManualResetEvent>;
+    private static curr_executing_c := 0;
     
     public constructor(first: boolean; fname, comp_fname: string; when_selected: TestResult->(); change_max_tests: integer->(); when_tested: ()->());
     begin
@@ -29,12 +31,21 @@ type
       var sp := new StackPanel;
       self.Child := sp;
       
+      var wh := new System.Threading.ManualResetEvent(false);
+      lock test_mres do
+      begin
+        test_mres.Enqueue(wh);
+        curr_executing_c += 1;
+      end;
+      
       System.Threading.Thread.Create(()->
       try
         var curr_test_dir := GetFullPath(
           $'{test_dir}\0\[{System.IO.Path.GetFileNameWithoutExtension(comp_fname)}] {fname.Replace(''\'',''_'')}'
         );
         change_max_tests(+2);
+        
+        wh.WaitOne;
         
         CopyDir(BucketDir, curr_test_dir);
         var ctr := new CompResult(curr_test_dir, fname, comp_fname);
@@ -56,6 +67,15 @@ type
           change_max_tests(-1);
         
         System.IO.Directory.Delete(curr_test_dir, true);
+        
+        lock test_mres do
+        begin
+          if test_mres.Count<>0 then test_mres.Dequeue.Set();
+          curr_executing_c -= 1;
+          if curr_executing_c=0 then
+            CopyDir(BucketDir, $'{test_dir}\0\');
+        end;
+        
       except
         on e: Exception do MessageBox.Show(e.ToString);
       end).Start;
@@ -169,6 +189,9 @@ type
         c += 1;
       end;
       
+      lock BucketBatchTestViewer.test_mres do
+        loop Min(BucketBatchTestViewer.test_mres.Count, System.Environment.ProcessorCount+1) do
+          BucketBatchTestViewer.test_mres.Dequeue.Set();
     end;
     private constructor := raise new System.InvalidOperationException;
     

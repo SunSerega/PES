@@ -21,9 +21,7 @@ type
       
       w.Content := new BucketLoadViewer(tr->
       begin
-        var inital_state_dir := $'{test_dir}\0';
-        CopyDir(BucketDir, inital_state_dir);
-        w.Content := new MinimizationViewer(inital_state_dir, tr);
+        w.Content := new MinimizationViewer(BucketDir, tr);
       end);
       
     end;

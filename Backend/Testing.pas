@@ -23,6 +23,7 @@ type
     begin
       var psi := new System.Diagnostics.ProcessStartInfo(comp_fname, $'"{fname}"');
       psi.UseShellExecute := false;
+      psi.CreateNoWindow := true;
       psi.RedirectStandardInput := true;
       psi.RedirectStandardOutput := true;
       psi.RedirectStandardError := true;
@@ -53,11 +54,16 @@ type
       
       var full_fname := System.IO.Path.Combine(dir, fname);
       
-      if System.IO.File.Exists(System.IO.Path.ChangeExtension(full_fname, '.pcu')) then
-        is_module := true else
-      if System.IO.File.Exists(System.IO.Path.ChangeExtension(full_fname, '.exe')) then
-        is_module := false else
-        raise new System.NotSupportedException($'Can''t find .pcu or .exe result file of "{full_fname}"');
+      if not self.IsError then
+      begin
+        
+        if System.IO.File.Exists(System.IO.Path.ChangeExtension(full_fname, '.pcu')) then
+          is_module := true else
+        if System.IO.File.Exists(System.IO.Path.ChangeExtension(full_fname, '.exe')) then
+          is_module := false else
+          raise new System.NotSupportedException($'Can''t find .pcu or .exe result file of "{full_fname}"');
+        
+      end;
       
 //      lock output do
 //      begin
