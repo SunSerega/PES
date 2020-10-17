@@ -4,10 +4,14 @@ uses System.Windows;
 uses System.Windows.Controls;
 uses System.Windows.Media;
 
-uses PathUtils    in '..\Utils\PathUtils';
+uses PathUtils        in '..\Utils\PathUtils';
 
-uses Testing      in '..\Backend\Testing';
-uses SettingData  in '..\Backend\SettingData';
+uses Testing          in '..\Backend\Testing';
+uses SettingData      in '..\Backend\SettingData';
+uses PersentDone      in '..\Backend\PersentDone';
+uses MinimizableCore  in '..\Backend\MinimizableCore';
+
+uses MFolder          in '..\Backend\Minimizables\MFolder';
 
 uses VUtils;
 uses Common;
@@ -18,11 +22,13 @@ type
     public any_change := false;
     
     private stage_part_dir: string;
+    private expected_tr: TestResult;
+    private counter := new PersentDoneCounter;
     
-    public constructor(stage_dir: string);
+    public constructor(stage_dir: string; expected_tr: TestResult);
     begin
       self.stage_part_dir := System.IO.Path.Combine(stage_dir, self.GetType.Name);
-      
+      self.expected_tr := expected_tr;
     end;
     private constructor := raise new System.InvalidOperationException;
     
@@ -31,16 +37,81 @@ type
     public function MakeUIElement: UIElement; abstract;
     
   end;
-  FileRemoveMSP = sealed class(MinimizationStagePart)
+  FolderMSP = sealed class(MinimizationStagePart)
+    
+    private procedure CopyContent(dir1, dir2: string; mask: MinimizableNode);
+    begin
+      foreach var n in mask.Enmr do
+        match n with
+          
+          MFolderContents(var mdir):
+            System.IO.Directory.CreateDirectory(
+              System.IO.Path.Combine(dir2, mdir.Path)
+            );
+          
+          MFolderFile(var mfile):
+            System.IO.File.Copy(
+              System.IO.Path.Combine(dir1, mfile.Path),
+              System.IO.Path.Combine(dir2, mfile.Path)
+            );
+          
+          else raise new System.NotSupportedException(n.GetType.ToString);
+        end;
+    end;
     
     public function Execute(last_source_dir: string): string; override;
     begin
       Result := last_source_dir;
+      if System.IO.Directory.EnumerateFileSystemEntries(last_source_dir).Count<2 then exit;
       
-      CopyDir(last_source_dir, stage_part_dir);
-      Result := stage_part_dir;
-      Sleep(1000);
-      var ToDo := 0;
+      var temp_source_origin := System.IO.Path.Combine(stage_part_dir, '0');
+      CopyDir(last_source_dir, temp_source_origin);
+      var minimizable := new MFolderContents(temp_source_origin);
+      
+      var prev_names := new HashSet<string>;
+      var ensure_unique_name := function(name: string): string->
+      begin
+        Result := name;
+        if prev_names.Add(Result) then exit;
+        
+        var i := 2;
+        while true do
+        begin
+          Result := $'{name} ({i})';
+          lock prev_names do
+            if prev_names.Add(Result) then exit;
+          i += 1;
+        end;
+        
+      end;
+      
+      if minimizable.DoAllMinimizing(counter, n->
+      begin
+        Result := false;
+        if not n.Enmr.OfType&<MFolderFile>.Any(mfile->mfile.Path=self.expected_tr.TargetFName) then exit;
+        
+        var curr_test_dir := System.IO.Path.Combine(
+          self.stage_part_dir, ensure_unique_name(n.ReadableName)
+        );
+        CopyContent(temp_source_origin, curr_test_dir, n);
+        
+        var ctr := new CompResult(expected_tr, curr_test_dir);
+        if self.expected_tr is CompResult(var expected_ctr) then
+          Result := CompResult.AreSame(ctr, expected_ctr) else
+        begin
+          var etr := new ExecResult(ctr);
+          if self.expected_tr is ExecResult(var expected_etr) then
+            Result := ExecResult.AreSame(etr, expected_etr) else
+          begin
+            raise new System.NotSupportedException(expected_tr.GetType.ToString);
+          end;
+        end;
+        
+      end) then
+      begin
+        Result := System.IO.Path.Combine(stage_part_dir, '0-res');
+        CopyContent(temp_source_origin, Result, minimizable);
+      end;
       
     end;
     
@@ -123,11 +194,11 @@ type
         Result := last_source_dir;
     end;
     
-    public function Execute(last_source_dir: string): string;
+    public function Execute(last_source_dir: string; expected_tr: TestResult): string;
     begin
       Result := last_source_dir;
       
-      Result := ApplyMSP(Result, new FileRemoveMSP(self.stage_dir));
+      Result := ApplyMSP(Result, new FolderMSP(self.stage_dir, expected_tr));
       var ToDo := 0;
       
     end;
@@ -137,7 +208,7 @@ type
   MinimizationLog = sealed class(Border)
     public event StagePartDone: string->();
     
-    public constructor(inital_state_dir: string);
+    public constructor(inital_state_dir: string; expected_tr: TestResult);
     begin
       self.BorderThickness := new Thickness(0,0,1,0);
       self.BorderBrush := Brushes.Black;
@@ -176,7 +247,7 @@ type
           end);
           
           ms.StagePartDone += dir->self.StagePartDone(dir);
-          var new_source_dir := ms.Execute(last_source_dir);
+          var new_source_dir := ms.Execute(last_source_dir, expected_tr);
           
           Dispatcher.Invoke(()->
           if (prev_ms<>nil) and not prev_ms.spoiler_clicked then 
@@ -386,7 +457,7 @@ type
       var lines_count := CountLines(inital_state_dir);
       
       begin
-        var log := new MinimizationLog(inital_state_dir);
+        var log := new MinimizationLog(inital_state_dir, tr);
         self.Children.Add(log);
         log.StagePartDone += dir->
         begin

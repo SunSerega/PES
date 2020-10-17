@@ -2,13 +2,19 @@
 
 type
   TestResult = abstract class
+    private dir, fname: string;
+    
+    public property WorkDir: string read dir;
+    public property TargetFName: string read fname;
+    
+    public property Parent: TestResult read nil; virtual;
     
     public function GetShortDescription: string; abstract;
     
   end;
   
   CompResult = sealed class(TestResult)
-    private dir, fname, comp_fname: string;
+    private comp_fname: string;
     
     private otp, err: string;
     private is_module: boolean;
@@ -77,6 +83,20 @@ type
       self.comp_fname := comp_fname;
       Test;
     end;
+    public constructor(any_tr: TestResult; dir: string) :=
+    while true do
+    begin
+      if any_tr=nil then raise new System.ArgumentException;
+      if any_tr is CompResult(var ctr) then
+      begin
+        self.dir        := dir;
+        self.fname      := ctr.fname;
+        self.comp_fname := ctr.comp_fname;
+        Test;
+        exit;
+      end;
+      any_tr := any_tr.Parent;
+    end;
     
     public function IsError := (err<>nil) or otp.ToLower.Contains('err');
     public function IsModule := self.is_module;
@@ -97,6 +117,14 @@ type
       end;
     end;
     
+    public static function AreSame(ctr1, ctr2: CompResult): boolean;
+    begin
+      Result := false;
+      if ctr1.err <> ctr2.err then exit;
+      if (ctr1.err=nil) and (ctr1.otp <> ctr2.otp) then exit;
+      Result := true;
+    end;
+    
   end;
   
   CrossDomainExceptionContainer = sealed class(System.MarshalByRefObject)
@@ -104,7 +132,7 @@ type
     public constructor(e: Exception) := self.e := e;
   end;
   ExecResult = sealed class(TestResult)
-    private dir, fname: string;
+    private _parent: CompResult;
     
     private otp: string;
     private err: Exception;
@@ -174,14 +202,26 @@ type
     public constructor(ctr: CompResult);
     begin
       if not ctr.ExecTestReasonable then raise new System.InvalidOperationException;
-      self.dir    := ctr.dir;
-      self.fname  := ctr.fname;
+      self._parent  := ctr;
+      self.dir      := ctr.dir;
+      self.fname    := ctr.fname;
       Test;
     end;
+    
+    public property Parent: TestResult read _parent as TestResult; override;
     
     public function GetShortDescription: string; override;
     begin
       Result := err<>nil ? $'{err.GetType}: {err.Message}' : otp;
+    end;
+    
+    public static function AreSame(etr1, etr2: ExecResult): boolean;
+    begin
+      Result := false;
+      if etr1.err.GetType <> etr2.err.GetType then exit;
+      if etr1.err.Message <> etr2.err.Message then exit;
+      if (etr1.err=nil) and (etr1.otp <> etr2.otp) then exit;
+      Result := true;
     end;
     
   end;
