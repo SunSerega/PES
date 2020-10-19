@@ -10,6 +10,7 @@ type
     public property Parent: TestResult read nil; virtual;
     
     public function GetShortDescription: string; abstract;
+    public procedure ReportTo(dir: string); abstract;
     
   end;
   
@@ -123,6 +124,23 @@ type
       end;
     end;
     
+    public procedure ReportTo(dir: string); override;
+    begin
+      var sw := new System.IO.StreamWriter(System.IO.Path.Combine(dir, 'CompResult.dat'), false, System.Text.Encoding.UTF8);
+      loop 3 do sw.WriteLine;
+      
+      sw.WriteLine('# otp');
+      sw.WriteLine(otp);
+      sw.WriteLine;
+      
+      sw.WriteLine('# err');
+      sw.WriteLine(err);
+      sw.WriteLine;
+      
+      loop 1 do sw.WriteLine;
+      sw.Close;
+    end;
+    
     public static function AreSame(ctr1, ctr2: CompResult): boolean;
     begin
       Result := false;
@@ -219,6 +237,24 @@ type
     public function GetShortDescription: string; override;
     begin
       Result := err<>nil ? $'{err.GetType}: {err.Message}' : otp;
+    end;
+    
+    public procedure ReportTo(dir: string); override;
+    begin
+      if Parent<>nil then Parent.ReportTo(dir);
+      var sw := new System.IO.StreamWriter(System.IO.Path.Combine(dir, 'CompResult.dat'), false, System.Text.Encoding.UTF8);
+      loop 3 do sw.WriteLine;
+      
+      sw.WriteLine('# otp');
+      sw.WriteLine(otp);
+      sw.WriteLine;
+      
+      sw.WriteLine('# err');
+      sw.WriteLine(err.ToString.Trim(#13#10.ToArray));
+      sw.WriteLine;
+      
+      loop 1 do sw.WriteLine;
+      sw.Close;
     end;
     
     public static function AreSame(etr1, etr2: ExecResult): boolean;

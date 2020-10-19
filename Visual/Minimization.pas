@@ -75,10 +75,12 @@ type
         n.UnWrapTo(curr_test_dir, is_valid_node);
         
         var ctr := new CompResult(expected_tr, curr_test_dir);
+        var final_tr := ctr as TestResult;
         if self.expected_tr is CompResult(var expected_ctr) then
           Result := CompResult.AreSame(ctr, expected_ctr) else
         begin
           var etr := new ExecResult(ctr);
+          final_tr := etr as TestResult;
           if self.expected_tr is ExecResult(var expected_etr) then
             Result := ExecResult.AreSame(etr, expected_etr) else
           begin
@@ -86,7 +88,24 @@ type
           end;
         end;
         
-        if Result and report then self.NewStableBuild(curr_test_dir);
+        foreach var fname in EnumerateFiles(curr_test_dir) do System.IO.File.Delete(fname);
+        foreach var sub_dir in EnumerateDirectories(curr_test_dir) do System.IO.Directory.Delete(sub_dir, true);
+        
+        begin
+          var new_curr_test_dir := System.IO.Path.Combine(
+            System.IO.Path.GetDirectoryName(curr_test_dir),
+            (Result?'+ ':'- ') + System.IO.Path.GetFileName(curr_test_dir)
+          );
+          System.IO.Directory.Move(curr_test_dir, new_curr_test_dir);
+          curr_test_dir := new_curr_test_dir;
+        end;
+        
+        if Result{ and report} then
+        begin
+          n.UnWrapTo(curr_test_dir, is_valid_node);
+          self.NewStableBuild(curr_test_dir);
+        end else
+          final_tr.ReportTo(curr_test_dir);
       end) then
       begin
         Result := System.IO.Path.Combine(stage_part_dir, '0-res');

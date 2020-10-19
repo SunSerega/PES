@@ -80,27 +80,54 @@ begin
   
 end;
 
-function SmartEnmrLayers(c: integer): sequence of integer;
-begin
-  if c<1 then exit;
-  yield c;
-  var best_point := Max(1, c div MaxThreadBatch);
-  if best_point<>c then
-  begin
-    yield best_point;
-    if best_point<>1 then
-      yield 1;
-  end;
-  for var l := c-1 downto 1 do
-    if l<>best_point then
-      yield l;
-end;
+//function SmartEnmrLayers(c: integer; first: boolean): sequence of integer;
+//begin
+//  if c<1 then exit;
+//  if first or (c=1) then
+//  begin
+//    yield c;
+//    first := false;
+//  end;
+////  var best_point := Max(1, c div MaxThreadBatch);
+////  if best_point<>c then
+////  begin
+////    yield best_point;
+////    if best_point<>1 then
+////      yield 1;
+////  end;
+//  for var l := {2}1 to c-1 do
+////    if l<>best_point then
+//      yield l;
+//end;
 
 /// l=кол-во элементов которые убирают
 /// c=кол-во всех элементов
 function EnmrRemInds(l, c: integer): sequence of array of integer;
 begin
   if l<0 then raise new System.ArgumentException;
+  
+  if l*2 > c then
+  begin
+    foreach var inds in EnmrRemInds(c-l, c) do
+    begin
+      var res := new integer[l];
+      var res_ind := 0;
+      var inds_ind := 0;
+      for var i := 0 to c-1 do
+        if (inds_ind<>inds.Length) and (inds[inds_ind]=i) then
+          inds_ind += 1 else
+        begin
+          res[res_ind] := i;
+          res_ind += 1;
+        end;
+//      Writeln(inds);
+//      Writeln(res);
+//      Writeln('='*30);
+      yield res;
+    end;
+    exit;
+  end;
+  
   case l of
     
     0:
@@ -128,7 +155,18 @@ begin
   end;
 end;
 
-function ReorderForAsyncUse<T>(self: sequence of T; can_use: T->boolean): sequence of T; extensionmethod;
+type
+  ReorderUsability = (RU_now, RU_later, RU_discard);
+  
+  ReorderedItemContainer<T> = abstract class end;
+  ReorderedItemContainerItem<T> = sealed class(ReorderedItemContainer<T>)
+    public val: T;
+    public constructor(val: T) := self.val := val;
+    private constructor := raise new System.InvalidOperationException;
+  end;
+  ReorderedItemContainerSkip<T> = sealed class(ReorderedItemContainer<T>) end;
+  
+function ReorderForAsyncUse<T>(self: sequence of T; can_use: T->ReorderUsability): sequence of ReorderedItemContainer<T>; extensionmethod;
 const max_skipped = 256*256;
 begin
   var skipped := new Queue<T>;
@@ -137,23 +175,27 @@ begin
   begin
     
     foreach var el in self do
-      if can_use(el) then
-        yield el else
-      begin
-        if skipped.Count>=max_skipped then
-          yield skipped.Dequeue;
-        skipped += el;
+      case can_use(el) of
+        
+        RU_now: yield new ReorderedItemContainerItem<T>(el);
+        
+        RU_later:
+        if skipped.Count < max_skipped then
+          skipped += el;
+        
+        RU_discard: ;
+        
+        else raise new System.NotSupportedException;
       end;
     
     if skipped.Count=0 then break;
-    yield default(T);
-    self := skipped;
-    skipped := new Queue<T>;
+    yield new ReorderedItemContainerSkip<T>;
+    self := skipped.ToArray;
+    skipped.Clear;
   end;
   
 end;
 
-const max_tests_before_giveup = 128;
 function MinimizableList.Minimize(counter: PersentDoneCounter; test_case: function(descr: string; report: boolean; n: MinimizableNode; is_valid: MinimizableNode->boolean): boolean): boolean;
 begin
   Result := false;
@@ -187,14 +229,29 @@ begin
     sb += ' = ';
     sb += (removable_left.Count - without.Count).ToString;
     sb += ') [';
-    sb += without.Take(5).JoinToString(', ');
-    if without.Count>5 then
-      sb += ', ...';
+    foreach var n in without do
+      if sb.Length>=100 then
+      begin
+        sb += '..., ';
+        break;
+      end else
+      begin
+        sb += n.ToString;
+        sb += ', ';
+      end;
+    if without.Count<>0 then sb.Length -= 2 else
+      raise new System.InvalidOperationException;
     sb += ']';
     
     Result := test_case(sb.ToString, report, self, is_valid_node);
   end;
   
+  var default_max_tests_before_giveup := 128;
+  var start_layer := Max(1, removable_left.Count div MaxThreadBatch);
+  var p := 4.0; // 1..∞
+  
+  var max_tests_before_giveup := default_max_tests_before_giveup;
+  var curr_layer := start_layer;
   while true do
   begin
     var inds_usages := new integer[removable_left.Count];
@@ -207,45 +264,83 @@ begin
     var since_stable_lock := new object;
     
     foreach var remove_set in ExecMany(
-      SmartEnmrLayers(c).SelectMany(l->EnmrRemInds(l, c))
-      .ReorderForAsyncUse(
-        inds->inds.All(ind->inds_usages[ind]=0)
-      ),
-      inds->
-      if inds<>nil then
+      EnmrRemInds(curr_layer, c)
+      .ReorderForAsyncUse(inds->
       begin
-        lock inds_usages do foreach var ind in inds do inds_usages[ind] += 1;
-        
-        Result := new SimpleTask<HashSet<MinimizableNode>>(()->
+        Result := RU_now;
+        foreach var ind in inds do
         begin
-          var curr_removed := new HashSet<MinimizableNode>(inds.Length);
-          foreach var ind in inds do
-            curr_removed += removable_left[ind];
+          var use_c := inds_usages[ind];
+          if use_c=0 then
+            continue else
+          if use_c>0 then
+            Result := RU_later else
+          if use_c<0 then
+          begin
+            Result := RU_discard;
+            break;
+          end;
+        end;
+      end),
+      inds_cont->
+      begin
+        match inds_cont with
           
-          if test_case_without('test', false, curr_removed) then
+          ReorderedItemContainerItem<array of integer>(var inds_cont_item):
           begin
-            cts.Cancel;
-            counter.ManualAddValue(curr_removed.Count*scale*0.5);
-            Result := curr_removed;
-          end else
-          begin
-            lock since_stable_lock do
-              since_stable += 1;
-            if since_stable>=max_tests_before_giveup then
-              cts.Cancel;
+            var inds := inds_cont_item.val;
+            lock inds_usages do foreach var ind in inds do inds_usages[ind] += 1;
+            
+            Result := new SimpleTask<HashSet<MinimizableNode>>(()->
+            begin
+              var curr_removed := new HashSet<MinimizableNode>(inds.Length);
+              foreach var ind in inds do
+                curr_removed += removable_left[ind];
+              
+              if test_case_without('test', false, curr_removed) then
+              begin
+                lock since_stable_lock do since_stable := 0;
+                // .SelectMany.Distinct будет работает только пока
+                // .ReorderForAsyncUse не пропускает пересекающиеся последовательности
+                counter.ManualAddValue(curr_removed.SelectMany(n->n.Enmr).Distinct.Count*scale*0.5);
+                Result := curr_removed;
+              end else
+              lock since_stable_lock do
+              begin
+                since_stable += 1;
+                if since_stable>=max_tests_before_giveup then
+                  cts.Cancel;
+              end;
+              
+              lock inds_usages do foreach var ind in inds do inds_usages[ind] := integer.MinValue;
+            end);
+            
           end;
           
-          lock inds_usages do foreach var ind in inds do inds_usages[ind] -= 1;
-        end);
+          ReorderedItemContainerSkip<array of integer>(var inds_cont_skip): Result := nil;
+          
+        end;
       end,
       cts.Token
     ) do
     begin
       if remove_set=nil then continue;
       new_removed += remove_set;
+      if not cts.IsCancellationRequested and (new_removed.Sum(remove_set->remove_set.Count) >= removable_left.Count div 2) then
+        cts.Cancel;
     end;
     
-    if new_removed.Count=0 then break;
+    if new_removed.Count=0 then
+      if curr_layer>1 then
+      begin
+        curr_layer := curr_layer div 2;
+        max_tests_before_giveup := Round(default_max_tests_before_giveup ** (
+          (LogN(default_max_tests_before_giveup, c)-1) *
+          ( (start_layer-curr_layer)/(start_layer-1) ) ** p
+        +1));
+        continue;
+      end else
+        break;
     Result := true;
     
     var all_remove_set := new HashSet<MinimizableNode>(new_removed.Sum(remove_set->remove_set.Count));
@@ -255,35 +350,41 @@ begin
     
     if test_case_without('stable', true, all_remove_set) then
     begin
-      counter.ManualAddValue(all_remove_set.Count*scale*0.5);
+      var rem_c := 0;
       foreach var n in all_remove_set do
       begin
         safely_removed += n;
         foreach var sub_n in n.Enmr do
-          removable_left.Remove(n);
+          if removable_left.Remove(n) then
+            rem_c += 1;
       end;
+      counter.ManualAddValue(rem_c*scale*0.5);
     end else
       foreach var remove_set in new_removed do
       begin
         if not test_case_without('unstable', true, remove_set) then
         begin
-          counter.ManualAddValue(remove_set.Count*scale*-0.5);
+          counter.ManualAddValue(remove_set.SelectMany(n->n.Enmr).Distinct.Count*scale*-0.5);
           continue;
         end;
         
-        counter.ManualAddValue(remove_set.Count*scale*0.5);
+        var rem_c := 0;
         foreach var n in remove_set do
         begin
           safely_removed += n;
           foreach var sub_n in n.Enmr do
-            removable_left.Remove(n);
+            if removable_left.Remove(n) then
+              rem_c += 1;
         end;
+        counter.ManualAddValue(rem_c*scale*0.5);
         
       end;
     
+    if curr_layer>removable_left.Count then
+      curr_layer := removable_left.Count;
   end;
   
-  counter.ManualAddValue(removable_left.Count * scale);
+//  counter.ManualAddValue(removable_left.Count * scale);
   self.Cleanup(n->safely_removed.Contains(n));
 end;
 
