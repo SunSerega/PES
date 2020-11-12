@@ -66,7 +66,18 @@ type
         end else
           change_max_tests(-1);
         
-        System.IO.Directory.Delete(curr_test_dir, true);
+        while true do
+        try
+          System.IO.Directory.Delete(curr_test_dir, true);
+          break;
+        except
+          on e: Exception do
+          begin
+            Writeln(curr_test_dir);
+            Writeln(e);
+            continue;
+          end;
+        end;
         
         lock test_mres do
         begin

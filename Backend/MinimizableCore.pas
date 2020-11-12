@@ -2,9 +2,12 @@
 
 interface
 
-uses PersentDone;
+uses Counters;
+uses ThreadUtils;
 
 type
+  
+  {$region Node}
   
   MinimizableNode = abstract class
     
@@ -16,7 +19,9 @@ type
     public function Cleanup(is_invalid: MinimizableNode->boolean): MinimizableNode; virtual :=
     is_invalid(self) ? nil : self;
     
-    public procedure UnWrapTo(new_base_dir: string; is_valid_node: MinimizableNode->boolean); abstract;
+    public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); abstract;
+    
+    public function CountLines(need_node: MinimizableNode->boolean): integer; abstract;
     
     public function ToString: string; override := $'Node[{self.GetType}]';
     
@@ -25,11 +30,13 @@ type
   MinimizableItem = abstract class(MinimizableNode)
     
   end;
+  
   MinimizableList = abstract class(MinimizableNode)
     protected items := new List<MinimizableNode>;
     
     public function Cleanup(is_invalid: MinimizableNode->boolean): MinimizableNode; override;
     begin
+      Result := nil;
       if is_invalid(self) then exit;
       Result := self;
       for var i := 0 to items.Count-1 do
@@ -37,10 +44,18 @@ type
       items.RemoveAll(item->item=nil);
     end;
     
-    public procedure UnWrapTo(new_base_dir: string; is_valid_node: MinimizableNode->boolean); override :=
-    foreach var i in items do
-      if is_valid_node(i) then
-        i.UnWrapTo(new_base_dir, is_valid_node);
+    public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean := nil); override :=
+    foreach var item in items do
+      if (need_node=nil) or need_node(item) then
+        item.UnWrapTo(new_base_dir, need_node);
+    
+    public function CountLines(need_node: MinimizableNode->boolean): integer; override;
+    begin
+      Result := 0;
+      foreach var item in items do
+        if (need_node=nil) or need_node(item) then
+          Result += item.CountLines(need_node);
+    end;
     
     public procedure Add(i: MinimizableNode);
     begin
@@ -49,9 +64,95 @@ type
         self.invulnerable := true;
     end;
     
-    public function Minimize(counter: PersentDoneCounter; test_case: function(descr: string; report: boolean; n: MinimizableNode; is_valid: MinimizableNode->boolean): boolean): boolean;
+  end;
+  
+  {$endregion Node}
+  
+  {$region Counter}
+  
+  InternalMinimizationContext = record
+    public n: MinimizableNode;
+    public removable_left: List<MinimizableNode>;
+    public start_layer: integer;
+    public base_path: string;
+    public exec_test: string->boolean;
+    public unique_names := new HashSet<string>;
+    
+    public function EnsureUniqueName(name: string): string;
+    begin
+      Result := name;
+      lock unique_names do
+        if unique_names.Add(Result) then
+          exit;
+      var i := 2;
+      while true do
+      begin
+        Result := $'{name} ({i})';
+        lock unique_names do
+          if unique_names.Add(Result) then
+            exit;
+        i += 1;
+      end;
+    end;
+    
+    public function GetLayerForCount := (removable_left.Count div MaxThreadBatch).ClampBottom(1);
+    
+    public constructor(n: MinimizableNode; removable_left: List<MinimizableNode>; base_path: string; exec_test: string->boolean);
+    begin
+      self.n := n;
+      self.removable_left := removable_left;
+      self.start_layer := GetLayerForCount;
+      self.base_path := base_path;
+      self.exec_test := exec_test;
+    end;
     
   end;
+  
+  MinimizationLayerCounter = sealed class(Counter)
+    private c: InternalMinimizationContext;
+    private layer: integer;
+    
+    public function Execute: boolean;
+    
+    protected event ReportLineCount: integer->();
+    protected event NodeCountChanged: (integer, string)->();
+    
+    public property LayerRemoveCount: integer read layer;
+    
+    protected constructor(c: InternalMinimizationContext; layer: integer);
+    begin
+      self.c := c;
+      self.layer := layer;
+    end;
+    private constructor := raise new System.InvalidOperationException;
+    
+  end;
+  
+  MinimizationCounter = sealed class(Counter)
+    private c: InternalMinimizationContext;
+    
+    public function Execute: boolean;
+    
+    public event ReportLineCount: integer->();
+    public event LayerAdded: MinimizationLayerCounter->();
+    
+    public constructor(n: MinimizableNode; base_path: string; exec_test: string->boolean);
+    begin
+      var removable_left := n.Enmr.Where(n->not n.IsInvulnerable).ToList;
+      
+      self.c := new InternalMinimizationContext(
+        n,
+        removable_left,
+        base_path,
+        exec_test
+      );
+      
+    end;
+    private constructor := raise new System.InvalidOperationException;
+    
+  end;
+  
+  {$endregion Counter}
   
 implementation
 
@@ -79,26 +180,6 @@ begin
   end;
   
 end;
-
-//function SmartEnmrLayers(c: integer; first: boolean): sequence of integer;
-//begin
-//  if c<1 then exit;
-//  if first or (c=1) then
-//  begin
-//    yield c;
-//    first := false;
-//  end;
-////  var best_point := Max(1, c div MaxThreadBatch);
-////  if best_point<>c then
-////  begin
-////    yield best_point;
-////    if best_point<>1 then
-////      yield 1;
-////  end;
-//  for var l := {2}1 to c-1 do
-////    if l<>best_point then
-//      yield l;
-//end;
 
 /// l=кол-во элементов которые убирают
 /// c=кол-во всех элементов
@@ -155,81 +236,91 @@ begin
   end;
 end;
 
-type
-  ReorderUsability = (RU_now, RU_later, RU_discard);
-  
-  ReorderedItemContainer<T> = abstract class end;
-  ReorderedItemContainerItem<T> = sealed class(ReorderedItemContainer<T>)
-    public val: T;
-    public constructor(val: T) := self.val := val;
-    private constructor := raise new System.InvalidOperationException;
-  end;
-  ReorderedItemContainerSkip<T> = sealed class(ReorderedItemContainer<T>) end;
-  
-function ReorderForAsyncUse<T>(self: sequence of T; can_use: T->ReorderUsability): sequence of ReorderedItemContainer<T>; extensionmethod;
-const max_skipped = 256*256;
+function default_max_tests_before_giveup := MaxThreadBatch * 16;
+const minimization_p = 4.0; // 1..∞
+
+function MinimizationCounter.Execute: boolean;
 begin
-  var skipped := new Queue<T>;
+  Result := false;
   
+  if c.removable_left.Count=0 then
+  begin
+    self.InvokeValueChanged(1);
+    exit;
+  end;
+  
+  var curr_layer := c.start_layer;
+  
+  var twice_nodes_left := c.removable_left.Count*2;
+  var twice_initial_removable_count := twice_nodes_left;
+  
+  var l: MinimizationLayerCounter;
   while true do
   begin
+    var InvokeValueChanged := self.InvokeValueChanged; //ToDo #2197
     
-    foreach var el in self do
-      case can_use(el) of
-        
-        RU_now: yield new ReorderedItemContainerItem<T>(el);
-        
-        RU_later:
-        if skipped.Count < max_skipped then
-          skipped += el;
-        
-        RU_discard: ;
-        
-        else raise new System.NotSupportedException;
+    if (l=nil) or (l.layer <> curr_layer) then
+    begin
+      l := new MinimizationLayerCounter(c, curr_layer);
+      
+      l.ReportLineCount += line_count->self.ReportLineCount(line_count);
+      l.NodeCountChanged += (dnc, report_name)->
+      begin
+        twice_nodes_left += dnc;
+//        if report_name<>nil then $'{report_name}: actual={c.removable_left.Count} progress={twice_nodes_left/2}'.Println;
+        InvokeValueChanged(1 - twice_nodes_left/twice_initial_removable_count);
       end;
+      
+      var LayerAdded := LayerAdded;
+      if LayerAdded<>nil then LayerAdded(l);
+    end;
     
-    if skipped.Count=0 then break;
-    yield new ReorderedItemContainerSkip<T>;
-    self := skipped.ToArray;
-    skipped.Clear;
+    if l.Execute then
+      Result := true else
+    if curr_layer>1 then
+      curr_layer := curr_layer div 2 else
+      break;
+    
+    curr_layer := curr_layer.ClampTop(c.GetLayerForCount);
   end;
   
 end;
 
-function MinimizableList.Minimize(counter: PersentDoneCounter; test_case: function(descr: string; report: boolean; n: MinimizableNode; is_valid: MinimizableNode->boolean): boolean): boolean;
+function MinimizationLayerCounter.Execute: boolean;
 begin
   Result := false;
+  InvokeValueChanged(0);
   
-  var removable_left := self.Enmr.Where(n->not n.IsInvulnerable).ToList;
-  if removable_left.Count=0 then
+  var test_case_without := function(type_descr: string; without: HashSet<MinimizableNode>): boolean ->
   begin
-    counter.ManualAddValue(1);
-    exit;
-  end;
-  var scale := 1 / removable_left.Count;
-  
-  var safely_removed := new HashSet<MinimizableNode>;
-  var test_case_without := function(type_descr: string; report: boolean; without: HashSet<MinimizableNode>): boolean ->
-  begin
+    var unwrap_dir := System.IO.Path.Combine(c.base_path, c.EnsureUniqueName(type_descr));
+    var unwraped_c := 0;
     
-    //ToDo #2328
-    var is_valid_node := function(n: MinimizableNode): boolean ->
+    var real_without := new List<MinimizableNode>(without.Count);
+    
+    c.n.UnWrapTo(unwrap_dir, n->
     begin
-      Result := true;
-      if safely_removed.Contains(n) then Result := false;
-      if without.Contains(n) then Result := false;
-    end;
+      Result := not without.Contains(n);
+      if Result then
+      begin
+        if not n.IsInvulnerable then
+          unwraped_c += 1;
+      end else
+      begin
+        real_without += n;
+      end;
+    end);
     
     var sb := new StringBuilder;
     sb += type_descr;
     sb += ' - (';
-    sb += removable_left.Count.ToString;
+    sb += c.removable_left.Count.ToString;
     sb += '-';
     sb += without.Count.ToString;
     sb += ' = ';
-    sb += (removable_left.Count - without.Count).ToString;
+    sb += unwraped_c.ToString;
     sb += ') [';
-    foreach var n in without do
+    foreach var n in real_without do
       if sb.Length>=100 then
       begin
         sb += '..., ';
@@ -242,150 +333,128 @@ begin
     if without.Count<>0 then sb.Length -= 2 else
       raise new System.InvalidOperationException;
     sb += ']';
+    var curr_test_dir := System.IO.Path.Combine(c.base_path, c.EnsureUniqueName(sb.ToString));
     
-    Result := test_case(sb.ToString, report, self, is_valid_node);
-  end;
-  
-  var default_max_tests_before_giveup := 128;
-  var start_layer := Max(1, removable_left.Count div MaxThreadBatch);
-  var p := 4.0; // 1..∞
-  
-  var max_tests_before_giveup := default_max_tests_before_giveup;
-  var curr_layer := start_layer;
-  while true do
-  begin
-    var inds_usages := new integer[removable_left.Count];
-    var c := removable_left.Count;
-    
-    var cts := new System.Threading.CancellationTokenSource;
-    var new_removed := new List<HashSet<MinimizableNode>>;
-    
-    var since_stable := 0;
-    var since_stable_lock := new object;
-    
-    foreach var remove_set in ExecMany(
-      EnmrRemInds(curr_layer, c)
-      .ReorderForAsyncUse(inds->
+    while true do
+    try
+      System.IO.Directory.Move(unwrap_dir, curr_test_dir);
+      break;
+    except
+      on e: Exception do
       begin
-        Result := RU_now;
-        foreach var ind in inds do
-        begin
-          var use_c := inds_usages[ind];
-          if use_c=0 then
-            continue else
-          if use_c>0 then
-            Result := RU_later else
-          if use_c<0 then
-          begin
-            Result := RU_discard;
-            break;
-          end;
-        end;
-      end),
-      inds_cont->
-      begin
-        match inds_cont with
-          
-          ReorderedItemContainerItem<array of integer>(var inds_cont_item):
-          begin
-            var inds := inds_cont_item.val;
-            lock inds_usages do foreach var ind in inds do inds_usages[ind] += 1;
-            
-            Result := new SimpleTask<HashSet<MinimizableNode>>(()->
-            begin
-              var curr_removed := new HashSet<MinimizableNode>(inds.Length);
-              foreach var ind in inds do
-                curr_removed += removable_left[ind];
-              
-              if test_case_without('test', false, curr_removed) then
-              begin
-                lock since_stable_lock do since_stable := 0;
-                // .SelectMany.Distinct будет работает только пока
-                // .ReorderForAsyncUse не пропускает пересекающиеся последовательности
-                counter.ManualAddValue(curr_removed.SelectMany(n->n.Enmr).Distinct.Count*scale*0.5);
-                Result := curr_removed;
-              end else
-              lock since_stable_lock do
-              begin
-                since_stable += 1;
-                if since_stable>=max_tests_before_giveup then
-                  cts.Cancel;
-              end;
-              
-              lock inds_usages do foreach var ind in inds do inds_usages[ind] := integer.MinValue;
-            end);
-            
-          end;
-          
-          ReorderedItemContainerSkip<array of integer>(var inds_cont_skip): Result := nil;
-          
-        end;
-      end,
-      cts.Token
-    ) do
-    begin
-      if remove_set=nil then continue;
-      new_removed += remove_set;
-      if not cts.IsCancellationRequested and (new_removed.Sum(remove_set->remove_set.Count) >= removable_left.Count div 2) then
-        cts.Cancel;
+        Writeln(unwrap_dir);
+        Writeln(curr_test_dir);
+        Writeln(e);
+        continue;
+      end;
     end;
     
-    if new_removed.Count=0 then
-      if curr_layer>1 then
-      begin
-        curr_layer := curr_layer div 2;
-        max_tests_before_giveup := Round(default_max_tests_before_giveup ** (
-          (LogN(default_max_tests_before_giveup, c)-1) *
-          ( (start_layer-curr_layer)/(start_layer-1) ) ** p
-        +1));
-        continue;
-      end else
-        break;
-    Result := true;
-    
-    var all_remove_set := new HashSet<MinimizableNode>(new_removed.Sum(remove_set->remove_set.Count));
-    foreach var remove_set in new_removed do
-      foreach var n in remove_set do
-        all_remove_set += n;
-    
-    if test_case_without('stable', true, all_remove_set) then
-    begin
-      var rem_c := 0;
-      foreach var n in all_remove_set do
-      begin
-        safely_removed += n;
-        foreach var sub_n in n.Enmr do
-          if removable_left.Remove(n) then
-            rem_c += 1;
-      end;
-      counter.ManualAddValue(rem_c*scale*0.5);
-    end else
-      foreach var remove_set in new_removed do
-      begin
-        if not test_case_without('unstable', true, remove_set) then
-        begin
-          counter.ManualAddValue(remove_set.SelectMany(n->n.Enmr).Distinct.Count*scale*-0.5);
-          continue;
-        end;
-        
-        var rem_c := 0;
-        foreach var n in remove_set do
-        begin
-          safely_removed += n;
-          foreach var sub_n in n.Enmr do
-            if removable_left.Remove(n) then
-              rem_c += 1;
-        end;
-        counter.ManualAddValue(rem_c*scale*0.5);
-        
-      end;
-    
-    if curr_layer>removable_left.Count then
-      curr_layer := removable_left.Count;
+    Result := c.exec_test(curr_test_dir);
   end;
   
-//  counter.ManualAddValue(removable_left.Count * scale);
-  self.Cleanup(n->safely_removed.Contains(n));
+  var max_tests_before_giveup := self.layer=1 ? c.removable_left.Count : Round(default_max_tests_before_giveup ** (
+    (LogN(default_max_tests_before_giveup, c.removable_left.Count)-1) *
+    ( (c.start_layer-layer)/(c.start_layer-1) ) ** minimization_p
+  +1));
+  
+  var cts := new System.Threading.CancellationTokenSource;
+  var new_removed := new List<HashSet<MinimizableNode>>;
+  var all_remove_set := new HashSet<MinimizableNode>;
+  
+  var since_stable := 0;
+  var since_stable_lock := new object;
+  
+  var InvokeValueChanged := self.InvokeValueChanged; //ToDo #2197
+  foreach var remove_set in ExecMany(
+    EnmrRemInds(layer, c.removable_left.Count),
+    inds->
+    begin
+      //ToDo #????
+      var f := function: HashSet<MinimizableNode> ->
+      begin
+        Result := nil;
+        var curr_removed := new HashSet<MinimizableNode>(inds.Length);
+        foreach var ind in inds do
+          curr_removed += c.removable_left[ind];
+        
+        var any_removed: boolean;
+        lock all_remove_set do
+          any_removed := curr_removed.Any(n->not all_remove_set.Contains(n));
+        
+        if any_removed and test_case_without('test', curr_removed) then
+        begin
+          lock since_stable_lock do
+          begin
+            since_stable := 0;
+            InvokeValueChanged(0);
+          end;
+          
+          foreach var n in curr_removed.ToArray do
+            foreach var sub_n in n.Enmr do
+              curr_removed += sub_n;
+          Result := curr_removed;
+        end else
+        lock since_stable_lock do
+        begin
+          since_stable += 1;
+          InvokeValueChanged(since_stable.ClampTop(max_tests_before_giveup)/max_tests_before_giveup);
+          if since_stable>=max_tests_before_giveup then
+            cts.Cancel;
+        end;
+        
+      end;
+      Result := f;
+    end,
+    cts.Token
+  ) do
+  begin
+    if remove_set=nil then continue;
+    new_removed += remove_set;
+    
+    lock all_remove_set do
+    begin
+      var prev_count := all_remove_set.Count;
+      all_remove_set.UnionWith(remove_set);
+      self.NodeCountChanged(-(all_remove_set.Count - prev_count), nil);
+      
+      if not cts.IsCancellationRequested and (all_remove_set.Count >= c.removable_left.Count div 2) then
+        cts.Cancel;
+      
+      self.ReportLineCount(c.n.CountLines(n->not all_remove_set.Contains(n)));
+    end;
+    
+  end;
+  
+  if new_removed.Count=0 then exit;
+  Result := true;
+  
+  //ToDo Изменение цвета во время unstable?
+  if test_case_without('stable', all_remove_set) then
+  begin
+    c.n.Cleanup(n->n in all_remove_set);
+    self.ReportLineCount(c.n.CountLines(nil));
+    c.removable_left.RemoveAll(n->n in all_remove_set);
+    self.NodeCountChanged(-all_remove_set.Count, 'Stable');
+  end else
+  begin
+    self.NodeCountChanged(+all_remove_set.Count, 'Unstable start');
+    
+    foreach var remove_set in new_removed do
+      if test_case_without('unstable', remove_set) then
+      begin
+        c.n.Cleanup(n->n in remove_set);
+        self.ReportLineCount(c.n.CountLines(nil));
+        
+        var prev_count := c.removable_left.Count;
+        c.removable_left.RemoveAll(n->n in remove_set);
+        self.NodeCountChanged((prev_count-c.removable_left.Count) * -2, 'Unstable');
+        
+        all_remove_set.ExceptWith(remove_set);
+      end;
+    
+  end;
+  
+//  self.InvokeValueChanged(1);
 end;
 
 end.

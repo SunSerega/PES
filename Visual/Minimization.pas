@@ -4,173 +4,21 @@ uses System.Windows;
 uses System.Windows.Controls;
 uses System.Windows.Media;
 
-uses PathUtils        in '..\Utils\PathUtils';
-
-uses Testing          in '..\Backend\Testing';
-uses SettingData      in '..\Backend\SettingData';
-uses PersentDone      in '..\Backend\PersentDone';
-uses MinimizableCore  in '..\Backend\MinimizableCore';
-
-uses MFolder          in '..\Backend\Minimizables\MFolder';
-uses MFile            in '..\Backend\Minimizables\MFile';
+uses SettingData  in '..\Backend\SettingData';
+uses Testing      in '..\Backend\Testing';
 
 uses VUtils;
 uses Common;
 
+uses MSPCore      in 'MSP\MSPCore';
+uses MSPFolder    in 'MSP\MSPFolder';
+uses MSPFile      in 'MSP\MSPFile';
+
 type
-  
-  MinimizationStagePart = abstract class
-    public any_change := false;
-    public event StagePartStarted: Action0;
-    public event NewStableBuild: string->();
-    
-    private stage_part_dir: string;
-    private expected_tr: TestResult;
-    private counter := new PersentDoneCounter;
-    
-    public constructor(stage_dir: string; expected_tr: TestResult);
-    begin
-      self.stage_part_dir := System.IO.Path.Combine(stage_dir, self.GetType.Name);
-      self.expected_tr := expected_tr;
-    end;
-    private constructor := raise new System.InvalidOperationException;
-    
-    protected function MakeMinimizable(dir: string): MinimizableList; abstract;
-    public function Execute(last_source_dir: string): string;
-    begin
-      Result := last_source_dir;
-      
-      var StagePartStarted := self.StagePartStarted;
-      if StagePartStarted<>nil then StagePartStarted();
-      
-      var temp_source_origin := System.IO.Path.Combine(stage_part_dir, '0');
-      CopyDir(last_source_dir, temp_source_origin);
-      var minimizable := MakeMinimizable(temp_source_origin);
-      
-      var prev_names := new HashSet<string>;
-      var ensure_unique_name := function(name: string): string->
-      begin
-        Result := name;
-        lock prev_names do
-          if prev_names.Add(Result) then exit;
-        
-        var i := 2;
-        while true do
-        begin
-          Result := $'{name} ({i})';
-          lock prev_names do
-            if prev_names.Add(Result) then exit;
-          i += 1;
-        end;
-        
-      end;
-      
-      if minimizable.Minimize(counter, (descr, report, n, is_valid_node)->
-      begin
-        Result := false;
-        
-        var curr_test_dir := System.IO.Path.Combine(
-          self.stage_part_dir, ensure_unique_name(descr)
-        );
-        n.UnWrapTo(curr_test_dir, is_valid_node);
-        
-        var ctr := new CompResult(expected_tr, curr_test_dir);
-        var final_tr := ctr as TestResult;
-        if self.expected_tr is CompResult(var expected_ctr) then
-          Result := CompResult.AreSame(ctr, expected_ctr) else
-        begin
-          var etr := new ExecResult(ctr);
-          final_tr := etr as TestResult;
-          if self.expected_tr is ExecResult(var expected_etr) then
-            Result := ExecResult.AreSame(etr, expected_etr) else
-          begin
-            raise new System.NotSupportedException(expected_tr.GetType.ToString);
-          end;
-        end;
-        
-        foreach var fname in EnumerateFiles(curr_test_dir) do System.IO.File.Delete(fname);
-        foreach var sub_dir in EnumerateDirectories(curr_test_dir) do System.IO.Directory.Delete(sub_dir, true);
-        
-        begin
-          var new_curr_test_dir := System.IO.Path.Combine(
-            System.IO.Path.GetDirectoryName(curr_test_dir),
-            (Result?'+ ':'- ') + System.IO.Path.GetFileName(curr_test_dir)
-          );
-          System.IO.Directory.Move(curr_test_dir, new_curr_test_dir);
-          curr_test_dir := new_curr_test_dir;
-        end;
-        
-        if Result{ and report} then
-        begin
-          n.UnWrapTo(curr_test_dir, is_valid_node);
-          self.NewStableBuild(curr_test_dir);
-        end else
-          final_tr.ReportTo(curr_test_dir);
-      end) then
-      begin
-        Result := System.IO.Path.Combine(stage_part_dir, '0-res');
-        minimizable.UnWrapTo(Result, n->true);
-      end;
-      
-    end;
-    
-    public function MakeUIElement: UIElement; abstract;
-    
-  end;
-  FolderMSP = sealed class(MinimizationStagePart)
-    
-    protected function MakeMinimizable(dir: string): MinimizableList; override :=
-    new MFolderContents(dir, expected_tr.TargetFName);
-    
-    public function MakeUIElement: UIElement; override;
-    begin
-      var res := new Grid;
-      Result := res;
-      
-      var pb := new SmoothProgressBar;
-      res.Children.Add(pb);
-      pb.SnapMax(1);
-      counter.ValueChanged += v->pb.Dispatcher.Invoke(()->pb.AnimateVal(v));
-      
-      var tb := new TextBlock;
-      res.Children.Add(tb);
-      tb.HorizontalAlignment  := System.Windows.HorizontalAlignment.Center;
-      tb.VerticalAlignment    := System.Windows.VerticalAlignment.Center;
-      tb.Margin := new Thickness(5,2,5,2);
-      tb.Text := $'File removal';
-      
-    end;
-    
-  end;
-  FileMSP = sealed class(MinimizationStagePart)
-    
-    protected function MakeMinimizable(dir: string): MinimizableList; override :=
-    new MFileBatch(dir);
-    
-    public function MakeUIElement: UIElement; override;
-    begin
-      var res := new Grid;
-      Result := res;
-      
-      var pb := new SmoothProgressBar;
-      res.Children.Add(pb);
-      pb.SnapMax(1);
-      counter.ValueChanged += v->pb.Dispatcher.Invoke(()->pb.AnimateVal(v));
-      
-      var tb := new TextBlock;
-      res.Children.Add(tb);
-      tb.HorizontalAlignment  := System.Windows.HorizontalAlignment.Center;
-      tb.VerticalAlignment    := System.Windows.VerticalAlignment.Center;
-      tb.Margin := new Thickness(5,2,5,2);
-      tb.Text := $'Line removal';
-      
-    end;
-    
-  end;
   
   MinimizationStage = sealed class(Border)
     public event StagePartStarted: Action0;
-    public event NewStableBuild: string->();
+    public event ReportLineCount: integer->();
     
     private stage_num: integer;
     private stage_dir: string;
@@ -199,15 +47,19 @@ type
       self.Background := new SolidColorBrush(Color.FromRgb(240,240,240));
       
       self.Child := sr;
+//      sr.SmoothY := false;
       
       var spoiler_sp := new StackPanel;
       sr.Content := spoiler_sp;
       
-      var spoiler_title := new ClickableTextBlock;
+      var spoiler_title := new ClickableContent;
       spoiler_sp.Children.Add(spoiler_title);
-      spoiler_title.Text := $'Stage {stage_num}';
       spoiler_title.Margin := new Thickness(5);
-      spoiler_title.HorizontalAlignment := System.Windows.HorizontalAlignment.Stretch;
+      
+      var spoiler_title_tb := new TextBlock;
+      spoiler_title.Content := spoiler_title_tb;
+      spoiler_title_tb.Text := $'Stage {stage_num}';
+      spoiler_title_tb.HorizontalAlignment := System.Windows.HorizontalAlignment.Stretch;
       
       spoiler_sp.Children.Add(stage_parts_sp);
       stage_parts_sp.Margin := new Thickness(5,0,5,5);
@@ -223,7 +75,7 @@ type
     
     private function ApplyMSP(last_source_dir: string; msp: MinimizationStagePart): string;
     begin
-      msp.NewStableBuild += dir->self.NewStableBuild(dir);
+      msp.ReportLineCount += line_count->self.ReportLineCount(line_count);
       Dispatcher.Invoke(()->
       begin
         self.stage_parts_sp.Children.Add(msp.MakeUIElement);
@@ -253,7 +105,7 @@ type
   end;
   
   MinimizationLog = sealed class(Border)
-    public event NewStableBuild: string->();
+    public event ReportLineCount: integer->();
     
     public constructor(inital_state_dir: string; expected_tr: TestResult);
     begin
@@ -270,12 +122,8 @@ type
       sv.VerticalAlignment := System.Windows.VerticalAlignment.Top;
       sv.Padding := new Thickness(5);
       
-      var sr := new SmoothResizer;
-      sv.Content := sr;
-      sr.SmoothX := false;
-      
       var sp := new StackPanel;
-      sr.Content := sp;
+      sv.Content := sp;
       
       System.Threading.Thread.Create(()->
       try
@@ -285,8 +133,7 @@ type
         
         while true do
         begin
-          var ToDo_issue := 0;
-          var sp := sp; //ToDo
+          var sp := sp; //ToDo #????
           
           var ms := sp.Dispatcher.Invoke(()->
           begin
@@ -295,7 +142,7 @@ type
           end);
           
           ms.StagePartStarted += ()->sp.Dispatcher.Invoke(()->sp.Children.Add(ms));
-          ms.NewStableBuild += dir->self.NewStableBuild(dir);
+          ms.ReportLineCount += line_count->self.ReportLineCount(line_count);
           var new_source_dir := ms.Execute(last_source_dir, expected_tr);
           
           Dispatcher.Invoke(()->
@@ -451,8 +298,8 @@ type
       
       var val_pow := LogN(sqrt(2), val);
       var flipped := System.Math.IEEERemainder(val_pow, 2) < 0; // IEEERemainder возвращает от -1 до 1
-      var conv_k := val/l;
-      var curr_rect_val1 := sqrt(2)**(System.Math.Floor(val_pow)+1) / conv_k;
+      var conv_k := val/(l/2);
+      var curr_rect_val1 := sqrt(2)**(System.Math.Floor(val_pow)+3) / conv_k;
       var curr_rect_val2 := curr_rect_val1 / sqrt(2);
       for var i := 0 to rects.Length-1 do
       begin
@@ -471,7 +318,8 @@ type
         if (i>=1) and (i-1 < descr.Length) then
         begin
           var t := descr[i-1];
-          t.Text := (curr_rect_val1*conv_k).Round.ToString;
+          var lines_displayer := curr_rect_val1*conv_k;
+          t.Text := lines_displayer.ToString('N'+(3-Floor(Log10(lines_displayer).ClampBottom(0)+1)).ClampBottom(0));
           t.RenderTransform := flipped ? new RotateTransform(90) : nil;
           t.Measure(new Size(real.PositiveInfinity, real.PositiveInfinity));
           if flipped then
@@ -496,23 +344,18 @@ type
   
   MinimizationViewer = sealed class(DockPanel)
     
-    private static function CountLines(dir: string) :=
-    EnumerateAllFiles(dir, '*.pas').Sum(fname->ReadLines(fname).Count);
-    
     public constructor(inital_state_dir: string; tr: TestResult);
     begin
       
-//      var lines_count := 0.0;
-      var lines_count := CountLines(inital_state_dir);
+      var lines_count := 1.0;
+//      var lines_count := CountLines(inital_state_dir);
       
       begin
         var log := new MinimizationLog(inital_state_dir, tr);
         self.Children.Add(log);
-        log.NewStableBuild += dir->
+        log.ReportLineCount += new_line_count->
         begin
-          lines_count := CountLines(dir);
-//          lines_count *= 1.2;
-//          lines_count -= 1;
+          lines_count := new_line_count;
         end;
       end;
       

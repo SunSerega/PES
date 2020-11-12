@@ -3,6 +3,7 @@
 uses PathUtils        in '..\..\Utils\PathUtils';
 
 uses MinimizableCore  in '..\MinimizableCore';
+uses MConst;
 
 type
   
@@ -18,8 +19,14 @@ type
       self.short_fname  := short_fname;
     end;
     
-    public procedure UnWrapTo(new_base_dir: string; is_valid_node: MinimizableNode->boolean); override :=
+    public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); override :=
     raise new System.InvalidOperationException;
+    
+    public function CountLines(need_node: MinimizableNode->boolean): integer; override;
+    begin
+      Result := 0;
+      raise new System.InvalidOperationException;
+    end;
     
     public function ToString: string; override := $'({self.short_fname})+Line[{self.l_n}]';
     
@@ -35,45 +42,45 @@ type
       self.fname := GetRelativePath(fname, base_dir);
       var short_fname := System.IO.Path.GetFileName(fname);
       
-      case System.IO.Path.GetExtension(fname) of
-        
-        '.pas':
+      if System.IO.Path.GetExtension(fname) in LineCountableFileExts then
+      begin
+        var n := 1;
+        foreach var l in ReadLines(fname) do
         begin
-          var n := 1;
-          foreach var l in ReadLines(fname) do
-          begin
-            self.Add( new MFileLine(l, n, short_fname) );
-            n += 1;
-          end;
+          self.Add( new MFileLine(l, n, short_fname) );
+          n += 1;
         end;
-        
-        else self.org_fname := fname;
-      end;
+      end else
+        self.org_fname := fname;
       
     end;
     
-    public procedure UnWrapTo(new_base_dir: string; is_valid_node: MinimizableNode->boolean); override;
+    public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); override :=
+    if self.org_fname<>nil then
+      CopyFile(
+        self.org_fname,
+        System.IO.Path.Combine(new_base_dir, self.fname)
+      ) else
     begin
-      if self.org_fname<>nil then
-      begin
-        System.IO.File.Copy(
-          self.org_fname,
-          System.IO.Path.Combine(new_base_dir, self.fname)
-        );
-        exit;
-      end;
-      
       var fs := new System.IO.StreamWriter(
         System.IO.Path.Combine(new_base_dir, fname),
         false, System.Text.Encoding.UTF8
       );
       
-      foreach var l in items.Cast&<MFileLine> do
-        if is_valid_node(l) then
-          fs.WriteLine(l.l);
+      try
+        foreach var l in items.Cast&<MFileLine> do
+          if (need_node=nil) or need_node(l) then
+            fs.WriteLine(l.l);
+      finally
+        fs.Close;
+      end;
       
-      fs.Close;
     end;
+    
+    public function CountLines(need_node: MinimizableNode->boolean): integer; override :=
+    if org_fname<>nil then 0 else
+    if need_node=nil then items.Count else
+      items.Count(need_node);
     
   end;
   
@@ -92,7 +99,7 @@ type
       
     end;
     
-    public procedure UnWrapTo(new_base_dir: string; is_valid_node: MinimizableNode->boolean); override;
+    public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); override;
     begin
       System.IO.Directory.CreateDirectory(new_base_dir);
       foreach var sub_dir in sub_dirs do

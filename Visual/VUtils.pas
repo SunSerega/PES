@@ -29,8 +29,11 @@ type
         begin
           foreach var img in waiting_imgs do
             img.Dispatcher.InvokeAsync(()->
-            begin
+            try
               img.Source := self.fr;
+            except
+              on e: Exception do
+                MessageBox.Show(e.ToString);
             end);
           waiting_imgs := nil;
         end;
@@ -62,7 +65,7 @@ type
     
   end;
   
-  ClickableTextBlock = class(TextBlock)
+  ClickableContent = class(ContentControl)
     private clicked_inside := false;
     
     public event Click: System.Windows.Input.MouseButtonEventHandler;
@@ -267,10 +270,7 @@ type
       var child := GetVisualChild(0) as UIElement;
       if child=nil then exit;
       
-      child.Arrange(new Rect(0,0,
-        SmoothX ? AnimXLimit : finalSize.Width,
-        SmoothY ? AnimYLimit : finalSize.Height
-      ));
+      child.Arrange(new Rect(finalSize));
     end;
     
   end;

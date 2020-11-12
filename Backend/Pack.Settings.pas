@@ -3,7 +3,7 @@ uses Fixers         in '..\Utils\Fixers';
 
 function MakeSW(fname: string): System.IO.StreamWriter;
 begin
-  Result := new System.IO.StreamWriter(GetFullPathRTE(fname), false, enc);
+  Result := new System.IO.StreamWriter(GetFullPathRTA(fname), false, enc);
   loop 3 do Result.WriteLine;
 end;
 
@@ -19,7 +19,7 @@ begin
     
     var prev_used := new HashSet<string>;
     
-    foreach var fname in EnumerateAllFiles(GetFullPathRTE(RawFolder), '*.dat') do
+    foreach var fname in EnumerateAllFiles(GetFullPathRTA(RawFolder), '*.dat') do
     begin
       var sn := fname.Remove(0, fname.LastIndexOf(RawFolder) + RawFolder.Length+1);
       sn := System.IO.Path.ChangeExtension(sn, nil);

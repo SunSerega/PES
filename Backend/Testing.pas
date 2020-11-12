@@ -1,11 +1,14 @@
 ﻿unit Testing;
 
+interface
+
 type
   TestResult = abstract class
-    private dir, fname: string;
+    private dir, target_fname, source_fname: string;
     
     public property WorkDir: string read dir;
-    public property TargetFName: string read fname;
+//    public property TargetFName: string read target_fname;
+    public property SourceFName: string read source_fname;
     
     public property Parent: TestResult read nil; virtual;
     
@@ -22,7 +25,7 @@ type
     
     private procedure Test;
     begin
-      var psi := new System.Diagnostics.ProcessStartInfo(comp_fname, $'"{fname}"');
+      var psi := new System.Diagnostics.ProcessStartInfo(comp_fname, $'"{target_fname}"');
       psi.UseShellExecute := false;
       psi.CreateNoWindow := true;
       psi.RedirectStandardInput := true;
@@ -53,7 +56,7 @@ type
       end else
         self.err := self.err.Remove(#13).Trim;
       
-      var full_fname := System.IO.Path.Combine(dir, fname);
+      var full_fname := System.IO.Path.Combine(dir, target_fname);
       
       if not self.IsError then
       begin
@@ -85,9 +88,10 @@ type
     
     public constructor(dir, fname, comp_fname: string);
     begin
-      self.dir        := dir;
-      self.fname      := fname;
-      self.comp_fname := comp_fname;
+      self.dir          := dir;
+      self.target_fname := fname;
+      self.source_fname := fname;
+      self.comp_fname   := comp_fname;
       Test;
     end;
     public constructor(any_tr: TestResult; dir: string) :=
@@ -96,9 +100,10 @@ type
       if any_tr=nil then raise new System.ArgumentException;
       if any_tr is CompResult(var ctr) then
       begin
-        self.dir        := dir;
-        self.fname      := ctr.fname;
-        self.comp_fname := ctr.comp_fname;
+        self.dir          := dir;
+        self.target_fname := ctr.target_fname;
+        self.source_fname := ctr.source_fname;
+        self.comp_fname   := ctr.comp_fname;
         Test;
         exit;
       end;
@@ -151,55 +156,60 @@ type
     
   end;
   
-  CrossDomainExceptionContainer = sealed class(System.MarshalByRefObject)
-    public e: Exception;
-    public constructor(e: Exception) := self.e := e;
+  [System.Serializable]
+  ExceptionContainer = sealed class
+    public Message: string := nil;
+    public ErrType: string := nil;
+    public StackTrace: string := nil;
+    public AllText: string := nil;
+    public constructor(e: Exception);
+    begin
+      self.Message := e.Message;
+      self.ErrType := e.GetType.ToString;
+      self.StackTrace := e.StackTrace;
+      self.AllText := e.ToString;
+    end;
+    public constructor := exit;
   end;
   ExecResult = sealed class(TestResult)
+    private const max_exec_time = 5000;
     private _parent: CompResult;
     
     private otp: string;
-    private err: Exception;
+    private err: ExceptionContainer;
     
-    private static procedure TestBody :=
-    try
-      var ad := System.AppDomain.CurrentDomain;
-      var ec := ad.GetData('ec') as CrossDomainExceptionContainer;
-      var fname := ad.GetData('fname') as string;
-      
-      var ep := System.Reflection.Assembly.LoadFile(fname).EntryPoint;
-      var otp := new System.IO.StringWriter;
-      Console.SetOut(otp);
-      
-      try
-        ep.Invoke(nil, new object[0]);
-      except
-        on e: Exception do
-          ec.e := e;
-      end;
-      
-      ad.SetData('otp', otp.ToString.Remove(#13).Trim);
-    except
-      on e: Exception do
-        System.AppDomain.CurrentDomain.SetData('internal err', new CrossDomainExceptionContainer(e));
-    end;
     private procedure Test;
     begin
-      var ad := System.AppDomain.CreateDomain($'Execution of "{fname}"');
+      var psi := new System.Diagnostics.ProcessStartInfo(GetEXEFileName, $'"ExecTest={System.IO.Path.GetFullPath(System.IO.Path.Combine(dir,target_fname))}"');
+      psi.UseShellExecute := false;
+      psi.CreateNoWindow := true;
+      psi.RedirectStandardOutput := true;
+      psi.RedirectStandardError := true;
+      psi.WorkingDirectory := dir;
       
-      var ec := new CrossDomainExceptionContainer;
-      ad.SetData('ec', ec);
-      ad.SetData('fname', System.IO.Path.ChangeExtension(System.IO.Path.Combine(dir, fname), '.exe'));
+      var p := System.Diagnostics.Process.Start(psi);
+      if not p.WaitForExit(max_exec_time) then
+      begin
+        p.Kill;
+        self.err := new ExceptionContainer;
+        self.err.AllText := 'Execution took too long';
+        p.WaitForExit;
+        exit;
+      end;
       
-      ad.DoCallBack(TestBody);
+      self.otp := p.StandardOutput.ReadToEnd.Trim;
+      var err := p.StandardError.ReadToEnd;
       
-      if ad.GetData('internal err') is CrossDomainExceptionContainer(var internal_err) then
-        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(internal_err.e).Throw;
-      
-      self.err := ec.e;
-      self.otp := ad.GetData('otp') as string;
-      
-      System.AppDomain.Unload(ad);
+      var s := new System.Xml.Serialization.XmlSerializer(typeof(ExceptionContainer));
+      try
+        self.err := ExceptionContainer(s.Deserialize(new System.IO.StringReader(err)));
+      except
+        if not string.IsNullOrWhiteSpace(err) then
+        begin
+          self.err := new ExceptionContainer;
+          self.err.AllText := err.Trim;
+        end;
+      end;
       
 //      lock output do
 //      begin
@@ -219,8 +229,9 @@ type
     
     public constructor(dir, fname: string);
     begin
-      self.dir    := dir;
-      self.fname  := fname;
+      self.dir          := dir;
+      self.target_fname := fname;
+      self.source_fname := fname;
       Test;
     end;
     public constructor(ctr: CompResult);
@@ -228,16 +239,16 @@ type
       if not ctr.ExecTestReasonable then raise new System.InvalidOperationException;
       self._parent  := ctr;
       self.dir      := ctr.dir;
-      self.fname    := ctr.fname;
+      self.source_fname := ctr.source_fname;
+      self.target_fname := System.IO.Path.ChangeExtension(source_fname, '.exe');
       Test;
     end;
     
     public property Parent: TestResult read _parent as TestResult; override;
     
-    public function GetShortDescription: string; override;
-    begin
-      Result := err<>nil ? $'{err.GetType}: {err.Message}' : otp;
-    end;
+    public function GetShortDescription: string; override :=
+    if err=nil then otp else
+    $'{err.ErrType<>nil ? err.ErrType : err.GetType.ToString}: {err.Message<>nil ? err.Message : err.AllText}';
     
     public procedure ReportTo(dir: string); override;
     begin
@@ -249,9 +260,12 @@ type
       sw.WriteLine(otp);
       sw.WriteLine;
       
-      sw.WriteLine('# err');
-      sw.WriteLine(err.ToString.Trim(#13#10.ToArray));
-      sw.WriteLine;
+      if err<>nil then
+      begin
+        sw.WriteLine('# err');
+        sw.WriteLine(err.AllText.Trim(#13#10.ToArray));
+        sw.WriteLine;
+      end;
       
       loop 1 do sw.WriteLine;
       sw.Close;
@@ -260,12 +274,56 @@ type
     public static function AreSame(etr1, etr2: ExecResult): boolean;
     begin
       Result := false;
-      if etr1.err.GetType <> etr2.err.GetType then exit;
-      if etr1.err.Message <> etr2.err.Message then exit;
-      if (etr1.err=nil) and (etr1.otp <> etr2.otp) then exit;
+      if etr1.err=nil then
+      begin
+        if etr2.err<>nil then exit;
+        if etr1.otp <> etr2.otp then exit;
+      end else
+      begin
+        if etr2.err=nil then exit;
+        if etr1.err.Message <> etr2.err.Message then exit;
+      end;
       Result := true;
     end;
     
   end;
   
+implementation
+
+uses CLArgs in '..\Utils\CLArgs';
+uses MessageBoxing;
+
+procedure EmergencyThreadBody;
+begin
+  Sleep(ExecResult.max_exec_time);
+  Console.Error.WriteLine('Emergency halt');
+  Halt;
+end;
+
+begin
+  try
+    if GetArgs('ExecTest').SingleOrDefault is string(var fname) then
+    begin
+      var halt_thr := new System.Threading.Thread(EmergencyThreadBody);
+      halt_thr.IsBackground := true;
+      halt_thr.Start;
+      
+      Console.SetIn(new System.IO.StringReader(''));
+      var ep := System.Reflection.Assembly.LoadFile(fname).EntryPoint;
+      try
+        ep.Invoke(nil, new object[0]);
+      except
+        on e: Exception do
+        begin
+          {$reference System.Xml.dll}
+          var s := new System.Xml.Serialization.XmlSerializer(typeof(ExceptionContainer));
+          s.Serialize(Console.Error, new ExceptionContainer(e));
+        end;
+      end;
+      Halt;
+    end;
+  except
+    on e: Exception do
+      MessageBox.Show(e.ToString);
+  end;
 end.

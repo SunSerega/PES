@@ -3,6 +3,7 @@
 uses PathUtils        in '..\..\Utils\PathUtils';
 
 uses MinimizableCore  in '..\MinimizableCore';
+uses MConst;
 
 type
   
@@ -17,8 +18,11 @@ type
       self.invulnerable := self.rel_fname=target;
     end;
     
-    public procedure UnWrapTo(new_base_dir: string; is_valid_node: MinimizableNode->boolean); override :=
+    public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); override :=
     System.IO.File.Copy(fname, System.IO.Path.Combine(new_base_dir, rel_fname));
+    
+    public function CountLines(need_node: MinimizableNode->boolean): integer; override :=
+    if System.IO.Path.GetExtension(fname) in LineCountableFileExts then ReadLines(fname).Count else 0;
     
     public function ToString: string; override := $'File[{self.short_name}]';
     
@@ -42,7 +46,7 @@ type
     end;
     public constructor(dir, target: string) := Create(dir, dir, target);
     
-    public procedure UnWrapTo(new_base_dir: string; is_valid_node: MinimizableNode->boolean); override;
+    public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); override;
     begin
       var created_dir := System.IO.Path.Combine(new_base_dir, rel_dir);
 //      lock output do created_dir.Print.Length.Println;
