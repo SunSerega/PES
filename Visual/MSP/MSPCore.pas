@@ -31,9 +31,8 @@ type
       var StagePartStarted := self.StagePartStarted;
       if StagePartStarted<>nil then StagePartStarted();
       
-      var temp_source_origin := System.IO.Path.Combine(stage_part_dir, '0');
-      CopyDir(last_source_dir, temp_source_origin);
-      var minimizable := MakeMinimizable(temp_source_origin);
+      var minimizable := MakeMinimizable(last_source_dir);
+      minimizable.UnWrapTo( System.IO.Path.Combine(stage_part_dir, '0') );
       ReportLineCount(minimizable.CountLines(nil));
       
       var counter := new MinimizationCounter(minimizable, self.stage_part_dir, curr_test_dir->

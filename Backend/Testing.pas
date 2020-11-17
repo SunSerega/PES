@@ -138,9 +138,12 @@ type
       sw.WriteLine(otp);
       sw.WriteLine;
       
-      sw.WriteLine('# err');
-      sw.WriteLine(err);
-      sw.WriteLine;
+      if not string.IsNullOrWhiteSpace(err) then
+      begin
+        sw.WriteLine('# err');
+        sw.WriteLine(err);
+        sw.WriteLine;
+      end;
       
       loop 1 do sw.WriteLine;
       sw.Close;

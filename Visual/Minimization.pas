@@ -135,13 +135,15 @@ type
         begin
           var sp := sp; //ToDo #????
           
-          var ms := sp.Dispatcher.Invoke(()->
+          //ToDo #2342
+          var ms: MinimizationStage; sp.Dispatcher.Invoke(()->
           begin
-            Result := new MinimizationStage(i);
-            if prev_ms<>nil then Result.sr.SnapX(w->Min(prev_ms.sr.ExtentSize.Width, w));
+            ms := new MinimizationStage(i);
+            if prev_ms<>nil then ms.sr.SnapX(w->Min(prev_ms.sr.ExtentSize.Width, w));
           end);
           
-          ms.StagePartStarted += ()->sp.Dispatcher.Invoke(()->sp.Children.Add(ms));
+          //ToDo #2342
+          ms.StagePartStarted += ()->sp.Dispatcher.Invoke(()->begin sp.Children.Add(ms) end);
           ms.ReportLineCount += line_count->self.ReportLineCount(line_count);
           var new_source_dir := ms.Execute(last_source_dir, expected_tr);
           

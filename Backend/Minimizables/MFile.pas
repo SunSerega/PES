@@ -46,10 +46,11 @@ type
       begin
         var n := 1;
         foreach var l in ReadLines(fname) do
-        begin
-          self.Add( new MFileLine(l, n, short_fname) );
-          n += 1;
-        end;
+//          if not string.IsNullOrWhiteSpace(l) then //ToDo разобраться почему это всё ломает
+          begin
+            self.Add( new MFileLine(l, n, short_fname) );
+            n += 1;
+          end;
       end else
         self.org_fname := fname;
       

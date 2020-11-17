@@ -132,8 +132,14 @@ type
       var cd2 := new ColumnDefinition;
       g.ColumnDefinitions.Add(cd2);
       
+      if not System.IO.Directory.Exists(BucketDir) or not EnumerateAllFiles(BucketDir).Any then
+      begin
+        System.IO.Directory.CreateDirectory(BucketDir);
+        Halt;
+      end;
+      
       var c := 0;
-      foreach var fname in EnumerateAllFiles('Bucket', '*.pas') do
+      foreach var fname in EnumerateAllFiles(BucketDir, '*.pas') do
       begin
         var row := new RowDefinition;
         row.Height := new GridLength(0);
