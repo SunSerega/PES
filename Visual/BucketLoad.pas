@@ -135,6 +135,7 @@ type
       if not System.IO.Directory.Exists(BucketDir) or not EnumerateAllFiles(BucketDir).Any then
       begin
         System.IO.Directory.CreateDirectory(BucketDir);
+        Exec(BucketDir);
         Halt;
       end;
       

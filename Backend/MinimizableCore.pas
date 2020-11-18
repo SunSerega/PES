@@ -237,7 +237,7 @@ begin
 end;
 
 function default_max_tests_before_giveup := MaxThreadBatch * 16;
-const minimization_p = 4.0; // 1..∞
+const minimization_p = 2.2; // 1..∞
 
 function MinimizationCounter.Execute: boolean;
 begin
@@ -352,10 +352,11 @@ begin
     Result := c.exec_test(curr_test_dir);
   end;
   
-  var max_tests_before_giveup := self.layer=1 ? c.removable_left.Count : Round(default_max_tests_before_giveup ** (
-    (LogN(default_max_tests_before_giveup, c.removable_left.Count)-1) *
-    ( (c.start_layer-layer)/(c.start_layer-1) ) ** minimization_p
-  +1));
+  var max_tests_before_giveup := Round( c.removable_left.Count / ( self.layer ** (1/minimization_p) ) );
+//  var max_tests_before_giveup := self.layer=1 ? c.removable_left.Count : Round(default_max_tests_before_giveup ** (
+//    (LogN(default_max_tests_before_giveup, c.removable_left.Count)-1) *
+//    ( (c.start_layer-layer)/(c.start_layer-1) ) ** minimization_p
+//  +1));
   
   var cts := new System.Threading.CancellationTokenSource;
   var new_removed := new List<HashSet<MinimizableNode>>;
@@ -369,7 +370,7 @@ begin
     EnmrRemInds(layer, c.removable_left.Count),
     inds->
     begin
-      //ToDo #????
+      //ToDo #2345
       var f := function: HashSet<MinimizableNode> ->
       begin
         Result := nil;
