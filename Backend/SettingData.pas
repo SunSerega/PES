@@ -53,7 +53,7 @@ type
       need_curr_init := false;
     end;
     
-    public constructor(fname: string := 'Settings.dat');
+    public constructor(fname: string);
     begin
       self.fname := fname;
       
@@ -81,6 +81,7 @@ type
       
       Save(self.fname);
     end;
+    public constructor := Create(GetFullPathRTA('Settings.dat'));
     
     public procedure Save(fname: string);
     begin
@@ -94,7 +95,7 @@ type
       var sw := new System.IO.StreamWriter(fname, false, enc);
       loop 3 do sw.WriteLine;
       {$include Settings.Save-Body.CodeGenRes}
-      loop 2 do sw.WriteLine;
+      loop 1 do sw.WriteLine;
       sw.Close;
       
       if bu_fname<>nil then

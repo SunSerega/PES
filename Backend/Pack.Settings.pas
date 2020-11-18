@@ -67,6 +67,7 @@ begin
       core.WriteLine($'  var value := _{sn};');
       foreach var l in save_code do
       core.WriteLine($'  {l}');
+      core.WriteLine($'  sw.WriteLine;');
       core.WriteLine($'end;');
       core.WriteLine($'private function Get{sn}: {tn};');
       core.WriteLine($'begin');

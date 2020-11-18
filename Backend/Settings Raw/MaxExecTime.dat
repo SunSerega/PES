@@ -1,0 +1,16 @@
+
+
+
+# Type
+integer
+
+# InitDefault
+Result := 5000;
+
+# Load
+value := lns.Single.ToInteger;
+
+# Save
+sw.WriteLine(value);
+
+

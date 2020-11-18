@@ -17,6 +17,7 @@ begin
   var value := _Compilers;
   foreach var l in value do
     sw.WriteLine(l);
+  sw.WriteLine;
 end;
 private function GetCompilers: array of string;
 begin
@@ -37,6 +38,41 @@ begin
   _Compilers := value;
   Compilers_need_init := false;
   FastSave(SaveCompilers);
+end;
+
+private _MaxExecTime: integer;
+private MaxExecTime_need_init := true;
+private procedure LoadMaxExecTime(lns: array of string);
+begin
+  if lns=nil then exit;
+  var value: integer;
+  value := lns.Single.ToInteger;
+  _MaxExecTime := value;
+  MaxExecTime_need_init := false;
+end;
+private procedure SaveMaxExecTime(sw: System.IO.StreamWriter);
+begin
+  sw.WriteLine('# MaxExecTime');
+  var value := _MaxExecTime;
+  sw.WriteLine(value);
+  sw.WriteLine;
+end;
+private function GetMaxExecTime: integer;
+begin
+  if MaxExecTime_need_init then
+  begin
+    Result := 5000;
+    _MaxExecTime := Result;
+    MaxExecTime_need_init := false;
+    FastSave(SaveMaxExecTime);
+  end else
+    Result := _MaxExecTime;
+end;
+public property MaxExecTime: integer read GetMaxExecTime write
+begin
+  _MaxExecTime := value;
+  MaxExecTime_need_init := false;
+  FastSave(SaveMaxExecTime);
 end;
 
 

@@ -2,6 +2,8 @@
 
 interface
 
+uses SettingData;
+
 type
   TestResult = abstract class
     private dir, target_fname, source_fname: string;
@@ -175,7 +177,6 @@ type
     public constructor := exit;
   end;
   ExecResult = sealed class(TestResult)
-    private const max_exec_time = 5000;
     private _parent: CompResult;
     
     private otp: string;
@@ -183,15 +184,18 @@ type
     
     private procedure Test;
     begin
-      var psi := new System.Diagnostics.ProcessStartInfo(GetEXEFileName, $'"ExecTest={System.IO.Path.GetFullPath(System.IO.Path.Combine(dir,target_fname))}"');
+      var MaxExecTime := Settings.Current.MaxExecTime;
+      var full_target_fname := System.IO.Path.GetFullPath(System.IO.Path.Combine(dir,target_fname));
+      
+      var psi := new System.Diagnostics.ProcessStartInfo(GetEXEFileName, $'"ExecTest={full_target_fname}" "MaxExecTime={MaxExecTime}"');
       psi.UseShellExecute := false;
       psi.CreateNoWindow := true;
       psi.RedirectStandardOutput := true;
       psi.RedirectStandardError := true;
-      psi.WorkingDirectory := dir;
+      psi.WorkingDirectory := System.IO.Path.GetDirectoryName(full_target_fname);
       
       var p := System.Diagnostics.Process.Start(psi);
-      if not p.WaitForExit(max_exec_time) then
+      if not p.WaitForExit(MaxExecTime) then
       begin
         p.Kill;
         self.err := new ExceptionContainer;
@@ -256,7 +260,7 @@ type
     public procedure ReportTo(dir: string); override;
     begin
       if Parent<>nil then Parent.ReportTo(dir);
-      var sw := new System.IO.StreamWriter(System.IO.Path.Combine(dir, 'CompResult.dat'), false, System.Text.Encoding.UTF8);
+      var sw := new System.IO.StreamWriter(System.IO.Path.Combine(dir, 'ExecResult.dat'), false, System.Text.Encoding.UTF8);
       loop 3 do sw.WriteLine;
       
       sw.WriteLine('# otp');
@@ -296,11 +300,14 @@ implementation
 uses CLArgs in '..\Utils\CLArgs';
 uses MessageBoxing;
 
-procedure EmergencyThreadBody;
-begin
-  Sleep(ExecResult.max_exec_time);
+procedure EmergencyThreadBody :=
+try
+  Sleep(GetArgs('MaxExecTime').Single.ToInteger);
   Console.Error.WriteLine('Emergency halt');
   Halt;
+except
+  on e: Exception do
+    Console.Error.WriteLine(e);
 end;
 
 begin
