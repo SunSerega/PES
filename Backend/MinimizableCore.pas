@@ -493,7 +493,7 @@ begin
         end;
         
         lock giveup_lock do
-          if test_success and (new_removed_count*2 >= self.layer) then
+          if (self.layer<>1) and test_success and (new_removed_count*2 >= self.layer) then
           begin
             giveup_counter := 0;
             InvokeValueChanged(0);
