@@ -94,13 +94,13 @@ type
   end;
   
 //ToDo #2327
-    {public static }function ExecMany<T, TRes>(sq: sequence of T; make_work: T->Func0<TRes>; halt_switch: System.Threading.CancellationToken): sequence of TRes;
+    {public static }function ExecMany<T>(sq: sequence of ()->T; halt_switch: System.Threading.CancellationToken): sequence of T;
     begin
       var MaxThreadBatch := ThreadUtils.MaxThreadBatch;
       
-      var sq_enmr: IEnumerator<T> := sq.GetEnumerator;
-      var active_tasks := new List<SimpleTask<TRes>>(MaxThreadBatch);
-      var res_q := new AsyncQueue<SimpleTask<TRes>>(MaxThreadBatch);
+      var sq_enmr: IEnumerator<()->T> := sq.GetEnumerator;
+      var active_tasks := new List<SimpleTask<T>>(MaxThreadBatch);
+      var res_q := new AsyncQueue<SimpleTask<T>>(MaxThreadBatch);
       
       while true do
       begin
@@ -111,12 +111,12 @@ type
             break;
           end else
           begin
-            var work := make_work(sq_enmr.Current);
+            var work := sq_enmr.Current;
             
-            var temp := new TempContainer_2341<TRes>;
+            var temp := new TempContainer_2341<T>;
             temp.work := work;
             temp.res_q := res_q;
-            temp.new_tsk := new SimpleTask<TRes>(temp.lambda);
+            temp.new_tsk := new SimpleTask<T>(temp.lambda);
 //            Writeln($'Created task {temp.new_tsk.i}');
             //ToDo #2341
 //            var new_tsk: SimpleTask<TRes>;
@@ -143,5 +143,9 @@ type
       end;
       
     end;
-    
+ 
+ 
+ 
+function MakeFunc1<TOtp>(f: ()->TOtp) := f;
+
 end.

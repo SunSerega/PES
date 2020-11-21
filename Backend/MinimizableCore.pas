@@ -1,4 +1,5 @@
 ﻿unit MinimizableCore;
+{$savepcu false} //ToDo #2346
 
 interface
 
@@ -157,6 +158,7 @@ type
 implementation
 
 uses ThreadUtils;
+//uses AQueue in '..\Utils\AQueue';
 
 function MinimizableNode.Enmr: sequence of MinimizableNode;
 begin
@@ -236,7 +238,6 @@ begin
   end;
 end;
 
-function default_max_tests_before_giveup := MaxThreadBatch * 16;
 const minimization_p = 2.2; // 1..∞
 
 function MinimizationCounter.Execute: boolean;
@@ -286,12 +287,108 @@ begin
   
 end;
 
+type
+  LocalTestT = function(type_descr: string; without: HashSet<MinimizableNode>; new_removed_count: integer?): boolean;
+  
+  RemovalTree = sealed class
+    private AllNodes := new HashSet<MinimizableNode>;
+    private Branches := new List<RemovalTree>;
+    
+    public constructor(l: List<HashSet<MinimizableNode>>);
+    begin
+      var MaxThreadBatch := ThreadUtils.MaxThreadBatch;
+      
+      if l.Count > MaxThreadBatch then
+      begin
+        var m: integer;
+        var d := System.Math.DivRem(l.Count, MaxThreadBatch, m);
+        var last_ind := 0;
+        
+        for var i_branch := 0 to MaxThreadBatch-1 do
+        begin
+          var c := d + integer(i_branch < m);
+          var t := new RemovalTree(l.GetRange(last_ind, c));
+          foreach var n in t.AllNodes do
+            self.AllNodes += n;
+          self.Branches += t;
+          last_ind += c;
+        end;
+        
+        {$ifdef DEBUG}
+        if last_ind<>l.Count then
+          raise new System.InvalidOperationException;
+        {$endif DEBUG}
+        
+      end else
+      if l.Count=1 then
+        self.AllNodes := l.Single else
+        foreach var hs in l do
+        begin
+          var branch := new RemovalTree;
+          branch.AllNodes := hs;
+          self.AllNodes.UnionWith(hs);
+          self.Branches += branch;
+        end;
+      
+    end;
+    
+    public function Combine(test: LocalTestT): boolean;
+    begin
+      Result := false;
+      if Branches.Count=0 then exit;
+      if test($'combine[{self.Branches.Count}]', self.AllNodes, nil) then exit;
+      
+      var any_branch_change := false;
+      System.Threading.Tasks.Parallel.ForEach(self.Branches, branch->
+      begin
+        if branch.Combine(test) then
+          any_branch_change := true;
+      end);
+      if any_branch_change then
+      begin
+        Result := true;
+        var NewAllNodes := self.Branches[0].AllNodes.ToHashSet;
+        foreach var branch in self.Branches.Skip(1) do
+          NewAllNodes.UnionWith(branch.AllNodes);
+        if test($'recombine[{self.Branches.Count}]', NewAllNodes, nil) then
+          exit;
+      end;
+      
+      var NewAllNodes := self.Branches[0].AllNodes.ToHashSet;
+      var NewBranches := new List<RemovalTree>(self.Branches.Count);
+      NewBranches += self.Branches[0];
+      
+      foreach var branch in self.Branches.Skip(1) do
+        branch.TestAndAdd(NewAllNodes, NewBranches, test);
+      
+      Result := Result or (self.AllNodes.Count <> NewAllNodes.Count);
+      self.AllNodes := NewAllNodes;
+      self.Branches := NewBranches;
+    end;
+    
+    public procedure TestAndAdd(var NewAllNodes: HashSet<MinimizableNode>; NewBranches: List<RemovalTree>; test: LocalTestT);
+    begin
+      var hs := NewAllNodes.ToHashSet;
+      hs.UnionWith(self.AllNodes);
+      if test('sweep', hs, hs.Count-NewAllNodes.Count) then
+      begin
+        NewAllNodes := hs;
+        NewBranches += self;
+      end else
+      foreach var branch in self.Branches do
+        branch.TestAndAdd(NewAllNodes, NewBranches, test);
+    end;
+    
+  end;
+  
 function MinimizationLayerCounter.Execute: boolean;
 begin
   Result := false;
   InvokeValueChanged(0);
   
-  var test_case_without := function(type_descr: string; without: HashSet<MinimizableNode>): boolean ->
+  {$region test core}
+  
+  var test_case_without: LocalTestT := (type_descr, without, new_removed_count)->
   begin
     var unwrap_dir := System.IO.Path.Combine(c.base_path, c.EnsureUniqueName(type_descr));
     var unwraped_c := 0;
@@ -317,6 +414,12 @@ begin
     sb += c.removable_left.Count.ToString;
     sb += '-';
     sb += without.Count.ToString;
+    if new_removed_count<>nil then
+    begin
+      sb += '[';
+      sb += new_removed_count.ToString;
+      sb += ']';
+    end;
     sb += ' = ';
     sb += unwraped_c.ToString;
     sb += ') [';
@@ -352,110 +455,92 @@ begin
     Result := c.exec_test(curr_test_dir);
   end;
   
-  var max_tests_before_giveup := Round( c.removable_left.Count / ( self.layer ** (1/minimization_p) ) );
-//  var max_tests_before_giveup := self.layer=1 ? c.removable_left.Count : Round(default_max_tests_before_giveup ** (
-//    (LogN(default_max_tests_before_giveup, c.removable_left.Count)-1) *
-//    ( (c.start_layer-layer)/(c.start_layer-1) ) ** minimization_p
-//  +1));
+  {$endregion test core}
   
-  var cts := new System.Threading.CancellationTokenSource;
   var new_removed := new List<HashSet<MinimizableNode>>;
   var all_remove_set := new HashSet<MinimizableNode>;
-  
-  var since_stable := 0;
-  var since_stable_lock := new object;
-  
-  var InvokeValueChanged := self.InvokeValueChanged; //ToDo #2197
-  foreach var remove_set in ExecMany(
-    EnmrRemInds(layer, c.removable_left.Count),
-    inds->
-    begin
-      //ToDo #2345
-      var f := function: HashSet<MinimizableNode> ->
+  {$region wild tests}
+  begin
+    var max_tests_before_giveup := Round( c.removable_left.Count / ( self.layer ** (1/minimization_p) ) );
+    var cts := new System.Threading.CancellationTokenSource;
+    
+    var giveup_counter := 0;
+    var giveup_lock := new object;
+    
+    var InvokeValueChanged := self.InvokeValueChanged; //ToDo #2197
+    foreach var remove_set in ExecMany(
+      EnmrRemInds(layer, c.removable_left.Count).Select(inds->MakeFunc1(()->
       begin
         Result := nil;
         var curr_removed := new HashSet<MinimizableNode>(inds.Length);
         foreach var ind in inds do
           curr_removed += c.removable_left[ind];
         
-        var any_removed: boolean;
+        var new_removed_count: integer;
         lock all_remove_set do
-          any_removed := curr_removed.Any(n->not all_remove_set.Contains(n));
+          new_removed_count := curr_removed.Count(n->not all_remove_set.Contains(n));
         
-        if any_removed and test_case_without('test', curr_removed) then
+        var test_success := (new_removed_count<>0) and test_case_without('test', curr_removed, new_removed_count);
+        
+        if test_success then
         begin
-          lock since_stable_lock do
-          begin
-            since_stable := 0;
-            InvokeValueChanged(0);
-          end;
           
           foreach var n in curr_removed.ToArray do
             foreach var sub_n in n.Enmr do
               curr_removed += sub_n;
+          
           Result := curr_removed;
-        end else
-        lock since_stable_lock do
-        begin
-          since_stable += 1;
-          InvokeValueChanged(since_stable.ClampTop(max_tests_before_giveup)/max_tests_before_giveup);
-          if since_stable>=max_tests_before_giveup then
-            cts.Cancel;
         end;
         
-      end;
-      Result := f;
-    end,
-    cts.Token
-  ) do
-  begin
-    if remove_set=nil then continue;
-    new_removed += remove_set;
-    
-    lock all_remove_set do
+        lock giveup_lock do
+          if test_success and (new_removed_count*2 >= self.layer) then
+          begin
+            giveup_counter := 0;
+            InvokeValueChanged(0);
+          end else
+          begin
+            giveup_counter += 1;
+            InvokeValueChanged(giveup_counter.ClampTop(max_tests_before_giveup)/max_tests_before_giveup);
+            if giveup_counter>=max_tests_before_giveup then
+              cts.Cancel;
+          end;
+        
+      end)),
+      cts.Token
+    ) do
     begin
-      var prev_count := all_remove_set.Count;
-      all_remove_set.UnionWith(remove_set);
-      self.NodeCountChanged(-(all_remove_set.Count - prev_count), nil);
+      if remove_set=nil then continue;
+      new_removed += remove_set;
       
-      if not cts.IsCancellationRequested and (all_remove_set.Count >= c.removable_left.Count div 2) then
-        cts.Cancel;
+      lock all_remove_set do
+      begin
+        var prev_count := all_remove_set.Count;
+        all_remove_set.UnionWith(remove_set);
+        self.NodeCountChanged(-(all_remove_set.Count - prev_count), nil);
+        
+        if all_remove_set.Count*self.layer >= c.removable_left.Count then
+          cts.Cancel;
+        
+        self.ReportLineCount(c.n.CountLines(n->not all_remove_set.Contains(n)));
+      end;
       
-      self.ReportLineCount(c.n.CountLines(n->not all_remove_set.Contains(n)));
     end;
     
   end;
+  {$endregion wild tests}
   
   if new_removed.Count=0 then exit;
   Result := true;
   
-  //ToDo Изменение цвета во время unstable?
-  if test_case_without('stable', all_remove_set) then
-  begin
-    c.n.Cleanup(n->n in all_remove_set);
-    self.ReportLineCount(c.n.CountLines(nil));
-    c.removable_left.RemoveAll(n->n in all_remove_set);
-    self.NodeCountChanged(-all_remove_set.Count, 'Stable');
-  end else
-  begin
-    self.NodeCountChanged(+all_remove_set.Count, 'Unstable start');
-    
-    foreach var remove_set in new_removed do
-      if test_case_without('unstable', remove_set) then
-      begin
-        c.n.Cleanup(n->n in remove_set);
-        self.ReportLineCount(c.n.CountLines(nil));
-        
-        var prev_count := c.removable_left.Count;
-        c.removable_left.RemoveAll(n->n in remove_set);
-        self.NodeCountChanged((prev_count-c.removable_left.Count) * -2, 'Unstable');
-        
-        all_remove_set.ExceptWith(remove_set);
-      end;
-    
-  end;
+  var t := new RemovalTree(new_removed);
+  t.Combine(test_case_without);
+  c.n.Cleanup(n->n in t.AllNodes);
+  self.ReportLineCount(c.n.CountLines(nil));
+  var prev_rem_left_c := c.removable_left.Count;
+  c.removable_left.RemoveAll(n->n in t.AllNodes);
+  self.NodeCountChanged((c.removable_left.Count-prev_rem_left_c)*2 + all_remove_set.Count, nil);
   
-//  self.InvokeValueChanged(1);
+  c.n.UnWrapTo(System.IO.Path.Combine(c.base_path, c.EnsureUniqueName($'stable[{c.removable_left.Count}]')), nil);
 end;
 
 end.
