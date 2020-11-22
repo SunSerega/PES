@@ -35,19 +35,16 @@ type
       minimizable.UnWrapTo( System.IO.Path.Combine(stage_part_dir, '0') );
       ReportLineCount(minimizable.CountLines(nil));
       
-      var counter := new MinimizationCounter(minimizable, self.stage_part_dir, curr_test_dir->
+      var counter := new MinimizationCounter(minimizable, self.stage_part_dir, (curr_test_dir,ti)->
       begin
-        var final_tr: TestResult;
         
         var ctr := new CompResult(expected_tr, curr_test_dir);
-        final_tr := ctr;
         if self.expected_tr is CompResult(var expected_ctr) then
           Result := CompResult.AreSame(ctr, expected_ctr) else
         if ctr.IsError then
           Result := false else
         begin
           var etr := new ExecResult(ctr);
-          final_tr := etr;
           if self.expected_tr is ExecResult(var expected_etr) then
             Result := ExecResult.AreSame(etr, expected_etr) else
           begin
@@ -55,38 +52,14 @@ type
           end;
         end;
         
-        try
-          foreach var fname in EnumerateFiles(curr_test_dir) do System.IO.File.Delete(fname);
-          foreach var sub_dir in EnumerateDirectories(curr_test_dir) do System.IO.Directory.Delete(sub_dir, true);
-        except
-          on e: Exception do
-          begin
-            curr_test_dir.Println;
-            Writeln(e);
-            Halt;
-          end;
-        end;
-        
-        begin
-          var new_curr_test_dir := System.IO.Path.Combine(
-            System.IO.Path.GetDirectoryName(curr_test_dir),
-            (Result?'+ ':'- ') + System.IO.Path.GetFileName(curr_test_dir)
-          );
-          System.IO.Directory.Move(curr_test_dir, new_curr_test_dir);
-          curr_test_dir := new_curr_test_dir;
-        end;
-        
-        final_tr.ReportTo(curr_test_dir);
+        System.IO.Directory.Delete(curr_test_dir, true);
       end);
       
       counter.ReportLineCount += line_count->self.ReportLineCount(line_count);
       OnCounterCreated(counter);
       
       if counter.Execute then
-      begin
-        Result := System.IO.Path.Combine(stage_part_dir, '0-res');
-        minimizable.UnWrapTo(Result);
-      end;
+        Result := counter.LastStableDir;
       
     end;
     

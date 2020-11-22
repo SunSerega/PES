@@ -44,6 +44,45 @@ type
     
   end;
   
+  TestInfoContainer = sealed class(Border)
+    private const status_w = 5;
+    
+    public constructor(ti: RemTestInfo);
+    begin
+      self.BorderBrush := Brushes.Black;
+      self.BorderThickness := new Thickness(1);
+      
+      var g := new Grid;
+      self.Child := g;
+      
+      var tb := new TextBlock;
+      g.Children.Add(tb);
+      tb.Margin := new Thickness(status_w+3,3,3,3);
+      tb.HorizontalAlignment  := System.Windows.HorizontalAlignment.Center;
+      tb.VerticalAlignment    := System.Windows.VerticalAlignment.Center;
+      tb.Text := ti.DisplayName;
+      ti.TotalUnwrapedChanged += ()->tb.Dispatcher.Invoke(()->
+      begin
+        tb.Text := ti.DisplayName;
+      end);
+      
+      var status := new System.Windows.Shapes.Rectangle;
+      g.Children.Add(status);
+      status.Width := 0;
+      status.HorizontalAlignment := System.Windows.HorizontalAlignment.Left;
+      
+      ti.TestDone += res->status.Dispatcher.Invoke(()->
+      begin
+        status.Fill := if res then Brushes.Green else Brushes.Red;
+        var anim := new System.Windows.Media.Animation.DoubleAnimation(0, TestInfoContainer.status_w, new Duration(System.TimeSpan.FromSeconds(0.5)));
+        status.BeginAnimation(FrameworkElement.WidthProperty, anim);
+      end);
+      
+    end;
+    private constructor := raise new System.InvalidOperationException;
+    
+  end;
+  
   VisualMSP = sealed class(Border)
     
     public constructor;
@@ -81,13 +120,28 @@ type
         var cc := new CounterContainer(layer_counter, $'by {layer_counter.LayerRemoveCount}');
         dl.Header := cc;
         
-        var tb1 := new TextBlock;
-        dl.Children.Add(tb1);
-        tb1.Text := 'abc';
-        
-        var tb2 := new TextBlock;
-        dl.Children.Add(tb2);
-        tb2.Text := 'def';
+        var NewTestInfo: (RemTestInfo, DisplayList)->();
+        NewTestInfo := (ti, cont_dl)->cc.Dispatcher.Invoke(()->
+        begin
+          var outer_el: FrameworkElement;
+          
+          var header := new TestInfoContainer(ti);
+          outer_el := header;
+          header.Margin := new Thickness(0,3,0,0);
+          
+          if ti is ContainerTestInfo(var cti) then
+          begin
+            var sub_dl := new DisplayList;
+            outer_el := sub_dl;
+            sub_dl.ChildrenShift := 7;
+            sub_dl.ShowChildren := false;
+            sub_dl.Header := header;
+            cti.SubTestAdded += ti->NewTestInfo(ti, sub_dl);
+          end;
+          
+          cont_dl.Children.Add(outer_el, header);
+        end);
+        layer_counter.NewTestInfo += ti->NewTestInfo(ti, dl);;
         
         layer_counters_cont.Children.Add(sr, cc);
       except

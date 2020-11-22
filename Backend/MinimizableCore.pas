@@ -69,6 +69,137 @@ type
   
   {$endregion Node}
   
+  {$region TestInfo}
+  
+  TestInfo = abstract class
+    protected parent: TestInfo;
+    
+    protected constructor(parent: TestInfo) :=
+    self.parent := parent;
+    
+    public function EnmrNodes: sequence of MinimizableNode; abstract;
+    
+    public property DisplayName: string read; abstract;
+    
+  end;
+  
+  SourceTestInfo = sealed class(TestInfo)
+    private nodes: array of MinimizableNode;
+    
+    public constructor(nodes: array of MinimizableNode);
+    begin
+      inherited Create(nil);
+      self.nodes := nodes;
+    end;
+    
+    public function EnmrNodes: sequence of MinimizableNode; override := nodes;
+    
+    private function GetDisplayName: string;
+    begin
+      Result := nil;
+      raise new System.InvalidOperationException;
+    end;
+    public property DisplayName: string read GetDisplayName; override;
+    
+  end;
+  
+  RemTestInfo = abstract class(TestInfo)
+    private rem: HashSet<MinimizableNode>;
+    
+    private total_unwraped: integer? := nil;
+    
+    public event TotalUnwrapedChanged: ()->();
+    public procedure SetUnwraped(total_unwraped: integer);
+    begin
+      self.total_unwraped := total_unwraped;
+      var TotalUnwrapedChanged := self.TotalUnwrapedChanged;
+      if TotalUnwrapedChanged<>nil then TotalUnwrapedChanged();
+    end;
+    
+    public event TestDone: boolean->();
+    protected procedure SetResult(res: boolean);
+    begin
+      var TestDone := self.TestDone;
+      if TestDone<>nil then TestDone(res);
+    end;
+    
+    protected constructor(removing: HashSet<MinimizableNode>; parent: TestInfo);
+    begin
+      inherited Create(parent);
+      if parent=nil then raise new System.NotSupportedException;
+      self.rem := removing;
+    end;
+    ///--
+    private constructor := raise new System.InvalidOperationException;
+    
+    protected property Removing: HashSet<MinimizableNode> read rem;
+    public function EnmrNodes: sequence of MinimizableNode; override := parent.EnmrNodes.Where(n->not rem.Contains(n));
+    
+  end;
+  
+  StableTestInfo = sealed class(RemTestInfo)
+    
+    private function GetDisplayName: string;
+    begin
+      Result := nil;
+      raise new System.InvalidOperationException;
+    end;
+    public property DisplayName: string read GetDisplayName; override;
+    
+  end;
+  
+  WildTestInfo = sealed class(RemTestInfo)
+    private actually_removed: integer;
+    
+    protected constructor(removing: HashSet<MinimizableNode>; actually_removed: integer; parent: TestInfo);
+    begin
+      inherited Create(removing, parent);
+      self.actually_removed := actually_removed;
+    end;
+    
+    public property DisplayName: string read $'Wild: {parent.EnmrNodes.Count} - {Removing.Count} ({actually_removed}) => {total_unwraped?.ToString ?? ''...''}'; override;
+    
+  end;
+  
+  ContainerTestInfo = abstract class(RemTestInfo)
+    
+    public event SubTestAdded: RemTestInfo->();
+    
+    public procedure AddSubTest(test: RemTestInfo);
+    begin
+      var SubTestAdded := self.SubTestAdded;
+      if SubTestAdded<>nil then SubTestAdded(test);
+    end;
+    
+  end;
+  
+  CombineTestInfo = sealed class(ContainerTestInfo)
+    
+    public property DisplayName: string read $'Combine: {parent.EnmrNodes.Count} - {Removing.Count} => {total_unwraped?.ToString ?? ''...''}'; override;
+    
+  end;
+  
+  RecombineTestInfo = sealed class(ContainerTestInfo)
+    
+    public property DisplayName: string read $'Recombine: {parent.EnmrNodes.Count} - {Removing.Count} => {total_unwraped?.ToString ?? ''...''}'; override;
+    
+  end;
+  
+  SweepTestInfo = sealed class(ContainerTestInfo)
+    private actually_removed: integer;
+    
+    protected constructor(removing: HashSet<MinimizableNode>; actually_removed: integer; parent: TestInfo);
+    begin
+      inherited Create(removing, parent);
+      self.actually_removed := actually_removed;
+    end;
+    
+    public property DisplayName: string read $'Sweep: {parent.EnmrNodes.Count} - {Removing.Count} ({actually_removed}) => {total_unwraped?.ToString ?? ''...''}'; override;
+    
+  end;
+  
+  {$endregion TestInfo}
+  
   {$region Counter}
   
   InternalMinimizationContext = record
@@ -76,8 +207,9 @@ type
     public removable_left: List<MinimizableNode>;
     public start_layer: integer;
     public base_path: string;
-    public exec_test: string->boolean;
+    public exec_test: (string, TestInfo)->boolean;
     public unique_names := new HashSet<string>;
+    public source_test_info: TestInfo;
     
     public function EnsureUniqueName(name: string): string;
     begin
@@ -98,13 +230,14 @@ type
     
     public function GetLayerForCount := (removable_left.Count div MaxThreadBatch).ClampBottom(1);
     
-    public constructor(n: MinimizableNode; removable_left: List<MinimizableNode>; base_path: string; exec_test: string->boolean);
+    public constructor(n: MinimizableNode; removable_left: List<MinimizableNode>; base_path: string; exec_test: (string, TestInfo)->boolean);
     begin
       self.n := n;
       self.removable_left := removable_left;
       self.start_layer := GetLayerForCount;
       self.base_path := base_path;
       self.exec_test := exec_test;
+      self.source_test_info := new SourceTestInfo(removable_left.ToArray);
     end;
     
   end;
@@ -117,6 +250,14 @@ type
     
     protected event ReportLineCount: integer->();
     protected event NodeCountChanged: (integer, string)->();
+    protected event StableDirCreated: string->();
+    public event NewTestInfo: RemTestInfo->();
+    
+    public procedure InvokeNewTestInfo(ti: RemTestInfo);
+    begin
+      var NewTestInfo := self.NewTestInfo;
+      if NewTestInfo<>nil then NewTestInfo(ti);
+    end;
     
     public property LayerRemoveCount: integer read layer;
     
@@ -137,7 +278,10 @@ type
     public event ReportLineCount: integer->();
     public event LayerAdded: MinimizationLayerCounter->();
     
-    public constructor(n: MinimizableNode; base_path: string; exec_test: string->boolean);
+    private last_stable_dir: string := nil;
+    public property LastStableDir: string read last_stable_dir;
+    
+    public constructor(n: MinimizableNode; base_path: string; exec_test: (string, TestInfo)->boolean);
     begin
       var removable_left := n.Enmr.Where(n->not n.IsInvulnerable).ToList;
       
@@ -158,7 +302,6 @@ type
 implementation
 
 uses ThreadUtils;
-//uses AQueue in '..\Utils\AQueue';
 
 function MinimizableNode.Enmr: sequence of MinimizableNode;
 begin
@@ -244,12 +387,6 @@ function MinimizationCounter.Execute: boolean;
 begin
   Result := false;
   
-  if c.removable_left.Count=0 then
-  begin
-    self.InvokeValueChanged(1);
-    exit;
-  end;
-  
   var curr_layer := c.start_layer;
   
   var twice_nodes_left := c.removable_left.Count*2;
@@ -259,6 +396,12 @@ begin
   while true do
   begin
     var InvokeValueChanged := self.InvokeValueChanged; //ToDo #2197
+    
+    if c.removable_left.Count=0 then
+    begin
+      self.InvokeValueChanged(1);
+      exit;
+    end;
     
     if (l=nil) or (l.layer <> curr_layer) then
     begin
@@ -271,13 +414,20 @@ begin
 //        if report_name<>nil then $'{report_name}: actual={c.removable_left.Count} progress={twice_nodes_left/2}'.Println;
         InvokeValueChanged(1 - twice_nodes_left/twice_initial_removable_count);
       end;
+      l.StableDirCreated += dir->
+      begin
+        self.last_stable_dir := dir;
+      end;
       
       var LayerAdded := LayerAdded;
       if LayerAdded<>nil then LayerAdded(l);
     end;
     
     if l.Execute then
-      Result := true else
+    begin
+      c.source_test_info := new SourceTestInfo(c.removable_left.ToArray);
+      Result := true;
+    end else
     if curr_layer>1 then
       curr_layer := curr_layer div 2 else
       break;
@@ -288,8 +438,6 @@ begin
 end;
 
 type
-  LocalTestT = function(type_descr: string; without: HashSet<MinimizableNode>; new_removed_count: integer?): boolean;
-  
   RemovalTree = sealed class
     private AllNodes := new HashSet<MinimizableNode>;
     private Branches := new List<RemovalTree>;
@@ -332,16 +480,19 @@ type
       
     end;
     
-    public function Combine(test: LocalTestT): boolean;
+    public function Combine(source_test: TestInfo; test_func: RemTestInfo->boolean; add_as_sub_test: RemTestInfo->()): boolean;
     begin
       Result := false;
       if Branches.Count=0 then exit;
-      if test($'combine[{self.Branches.Count}]', self.AllNodes, nil) then exit;
+      
+      var main_combine_test := new CombineTestInfo(self.AllNodes, source_test);
+      if add_as_sub_test<>nil then add_as_sub_test(main_combine_test);
+      if test_func(main_combine_test) then exit;
       
       var any_branch_change := false;
       System.Threading.Tasks.Parallel.ForEach(self.Branches, branch->
       begin
-        if branch.Combine(test) then
+        if branch.Combine(source_test, test_func, main_combine_test.AddSubTest) then
           any_branch_change := true;
       end);
       if any_branch_change then
@@ -350,8 +501,13 @@ type
         var NewAllNodes := self.Branches[0].AllNodes.ToHashSet;
         foreach var branch in self.Branches.Skip(1) do
           NewAllNodes.UnionWith(branch.AllNodes);
-        if test($'recombine[{self.Branches.Count}]', NewAllNodes, nil) then
+        var recombine_test := new RecombineTestInfo(NewAllNodes, source_test);
+        main_combine_test.AddSubTest(recombine_test);
+        if test_func(recombine_test) then
+        begin
+          self.AllNodes := NewAllNodes;
           exit;
+        end;
       end;
       
       var NewAllNodes := self.Branches[0].AllNodes.ToHashSet;
@@ -359,24 +515,26 @@ type
       NewBranches += self.Branches[0];
       
       foreach var branch in self.Branches.Skip(1) do
-        branch.TestAndAdd(NewAllNodes, NewBranches, test);
+        branch.TestAndAdd(NewAllNodes, NewBranches, source_test, main_combine_test, test_func);
       
       Result := Result or (self.AllNodes.Count <> NewAllNodes.Count);
       self.AllNodes := NewAllNodes;
       self.Branches := NewBranches;
     end;
     
-    public procedure TestAndAdd(var NewAllNodes: HashSet<MinimizableNode>; NewBranches: List<RemovalTree>; test: LocalTestT);
+    public procedure TestAndAdd(var NewAllNodes: HashSet<MinimizableNode>; NewBranches: List<RemovalTree>; source_test: TestInfo; cont: ContainerTestInfo; test_func: RemTestInfo->boolean);
     begin
       var hs := NewAllNodes.ToHashSet;
       hs.UnionWith(self.AllNodes);
-      if test('sweep', hs, hs.Count-NewAllNodes.Count) then
+      var sweep_test := new SweepTestInfo(hs, hs.Count-NewAllNodes.Count, source_test);
+      cont.AddSubTest(sweep_test);
+      if test_func(sweep_test) then
       begin
         NewAllNodes := hs;
         NewBranches += self;
       end else
       foreach var branch in self.Branches do
-        branch.TestAndAdd(NewAllNodes, NewBranches, test);
+        branch.TestAndAdd(NewAllNodes, NewBranches, source_test, sweep_test, test_func);
     end;
     
   end;
@@ -388,71 +546,24 @@ begin
   
   {$region test core}
   
-  var test_case_without: LocalTestT := (type_descr, without, new_removed_count)->
+  var test_case_without := function(ti: RemTestInfo): boolean ->
   begin
-    var unwrap_dir := System.IO.Path.Combine(c.base_path, c.EnsureUniqueName(type_descr));
+    var curr_test_dir := System.IO.Path.Combine(c.base_path, c.EnsureUniqueName('test'));
+    
     var unwraped_c := 0;
-    
-    var real_without := new List<MinimizableNode>(without.Count);
-    
-    c.n.UnWrapTo(unwrap_dir, n->
+    c.n.UnWrapTo(curr_test_dir, n->
     begin
-      Result := not without.Contains(n);
+      Result := not ti.Removing.Contains(n);
       if Result then
       begin
         if not n.IsInvulnerable then
           unwraped_c += 1;
-      end else
-      begin
-        real_without += n;
       end;
     end);
+    ti.SetUnwraped(unwraped_c);
     
-    var sb := new StringBuilder;
-    sb += type_descr;
-    sb += ' - (';
-    sb += c.removable_left.Count.ToString;
-    sb += '-';
-    sb += without.Count.ToString;
-    if new_removed_count<>nil then
-    begin
-      sb += '[';
-      sb += new_removed_count.ToString;
-      sb += ']';
-    end;
-    sb += ' = ';
-    sb += unwraped_c.ToString;
-    sb += ') [';
-    foreach var n in real_without do
-      if sb.Length>=100 then
-      begin
-        sb += '..., ';
-        break;
-      end else
-      begin
-        sb += n.ToString;
-        sb += ', ';
-      end;
-    if without.Count<>0 then sb.Length -= 2 else
-      raise new System.InvalidOperationException;
-    sb += ']';
-    var curr_test_dir := System.IO.Path.Combine(c.base_path, c.EnsureUniqueName(sb.ToString));
-    
-    while true do
-    try
-      System.IO.Directory.Move(unwrap_dir, curr_test_dir);
-      break;
-    except
-      on e: Exception do
-      begin
-        Writeln(unwrap_dir);
-        Writeln(curr_test_dir);
-        Writeln(e);
-        continue;
-      end;
-    end;
-    
-    Result := c.exec_test(curr_test_dir);
+    Result := c.exec_test(curr_test_dir, ti);
+    ti.SetResult(Result);
   end;
   
   {$endregion test core}
@@ -480,7 +591,13 @@ begin
         lock all_remove_set do
           new_removed_count := curr_removed.Count(n->not all_remove_set.Contains(n));
         
-        var test_success := (new_removed_count<>0) and test_case_without('test', curr_removed, new_removed_count);
+        var test_success := new_removed_count <> 0;
+        if test_success then
+        begin
+          var ti := new WildTestInfo(curr_removed, new_removed_count, c.source_test_info);
+          self.InvokeNewTestInfo(ti);
+          test_success := test_case_without(ti);
+        end;
         
         if test_success then
         begin
@@ -533,14 +650,19 @@ begin
   Result := true;
   
   var t := new RemovalTree(new_removed);
-  t.Combine(test_case_without);
+  t.Combine(c.source_test_info, test_case_without, self.InvokeNewTestInfo);
+  c.source_test_info := new StableTestInfo(t.AllNodes, c.source_test_info);
   c.n.Cleanup(n->n in t.AllNodes);
   self.ReportLineCount(c.n.CountLines(nil));
   var prev_rem_left_c := c.removable_left.Count;
   c.removable_left.RemoveAll(n->n in t.AllNodes);
   self.NodeCountChanged((c.removable_left.Count-prev_rem_left_c)*2 + all_remove_set.Count, nil);
   
-  c.n.UnWrapTo(System.IO.Path.Combine(c.base_path, c.EnsureUniqueName($'stable[{c.removable_left.Count}]')), nil);
+  var stable_dir := System.IO.Path.Combine(c.base_path, c.EnsureUniqueName($'stable[{c.removable_left.Count}]'));
+  c.n.UnWrapTo(stable_dir, nil);
+  
+  var StableDirCreated := self.StableDirCreated;
+  if StableDirCreated<>nil then StableDirCreated(stable_dir);
 end;
 
 end.
