@@ -13,7 +13,7 @@ uses MSPCore;
 
 type
   
-  CounterContainer = sealed class(Grid)
+  CounterContainer = sealed class(StackedHeap)
     
     public constructor(c: Counter; descr: string);
     begin
@@ -44,42 +44,106 @@ type
     
   end;
   
-  TestInfoContainer = sealed class(Border)
+  TestInfoContainer = sealed class(ContentControl)
     private const status_w = 5;
     
-    public constructor(ti: RemTestInfo);
+    private _anchor: FrameworkElement;
+    public property Anchor: FrameworkElement read _anchor;
+    
+    private test_sucessful: boolean? := nil;
+    public property TestSucessful: boolean? read test_sucessful;
+    public event TestSucessfulChanged: boolean->();
+    
+    private contains_sub_items := false;
+    public property ContainsSubItems: boolean read contains_sub_items;
+    
+    public constructor(ti: TestInfo);
     begin
-      self.BorderBrush := Brushes.Black;
-      self.BorderThickness := new Thickness(1);
       
-      var g := new Grid;
-      self.Child := g;
+      var b := new Border;
+      self._anchor := b;
+      b.BorderBrush := Brushes.Black;
+      b.BorderThickness := new Thickness(1);
+      b.Background := Brushes.White;
       
-      var tb := new TextBlock;
-      g.Children.Add(tb);
-      tb.Margin := new Thickness(status_w+3,3,3,3);
-      tb.HorizontalAlignment  := System.Windows.HorizontalAlignment.Center;
-      tb.VerticalAlignment    := System.Windows.VerticalAlignment.Center;
-      tb.Text := ti.DisplayName;
-      ti.TotalUnwrapedChanged += ()->tb.Dispatcher.Invoke(()->
       begin
+        var sh := new StackedHeap;
+        b.Child := sh;
+        
+        var tb := new TextBlock;
+        sh.Children.Add(tb);
+        tb.Margin := new Thickness(status_w+3,3,status_w+3,3);
+        tb.HorizontalAlignment  := System.Windows.HorizontalAlignment.Center;
+        tb.VerticalAlignment    := System.Windows.VerticalAlignment.Center;
         tb.Text := ti.DisplayName;
-      end);
+        ti.DisplayNameUpdated += ()->tb.Dispatcher.Invoke(()->
+        begin
+          tb.Text := ti.DisplayName;
+        end);
+        
+        var status := new System.Windows.Shapes.Rectangle;
+        sh.Children.Add(status);
+        status.Width := 0;
+        status.HorizontalAlignment := System.Windows.HorizontalAlignment.Left;
+        
+        if ti is RemTestInfo(var rti) then rti.TestDone += res->status.Dispatcher.Invoke(()->
+        begin
+          self.test_sucessful := res;
+          var TestSucessfulChanged := self.TestSucessfulChanged;
+          if TestSucessfulChanged<>nil then TestSucessfulChanged(res);
+          status.Fill := if res then Brushes.Green else Brushes.Red;
+          if status.IsDescendantOf(Application.Current.MainWindow) then
+          begin
+            var anim := new System.Windows.Media.Animation.DoubleAnimation(0, TestInfoContainer.status_w, new Duration(System.TimeSpan.FromSeconds(0.5)));
+            status.BeginAnimation(FrameworkElement.WidthProperty, anim);
+          end else
+            status.Width := TestInfoContainer.status_w; var ToDo := 0; //ToDo Всё равно иногда не появляется
+        end);
+      end;
       
-      var status := new System.Windows.Shapes.Rectangle;
-      g.Children.Add(status);
-      status.Width := 0;
-      status.HorizontalAlignment := System.Windows.HorizontalAlignment.Left;
-      
-      ti.TestDone += res->status.Dispatcher.Invoke(()->
+      if ti is ContainerTestInfo(var cti) then
       begin
-        status.Fill := if res then Brushes.Green else Brushes.Red;
-        var anim := new System.Windows.Media.Animation.DoubleAnimation(0, TestInfoContainer.status_w, new Duration(System.TimeSpan.FromSeconds(0.5)));
-        status.BeginAnimation(FrameworkElement.WidthProperty, anim);
-      end);
+        contains_sub_items := true;
+        
+        var dl := new SimpleDisplayList;
+        self.Content := dl;
+        dl.ItemsShift := 10;
+        dl.VerticalAlignment := System.Windows.VerticalAlignment.Top;
+        dl.ShowItems := false;
+        dl.Header := b;
+        
+        cti.SubTestAdded += sub_ti->dl.Dispatcher.InvokeAsync(()->
+        try
+          var tic := new TestInfoContainer(sub_ti);
+          dl.AddElement(tic, tic.Anchor);
+        except
+          on e: Exception do
+            MessageBox.Show(e.ToString);
+        end);
+        
+      end else
+        self.Content := b;
       
     end;
     private constructor := raise new System.InvalidOperationException;
+    
+  end;
+  
+  LayerTestsContainer = sealed class(DisplayList<TestInfoContainer>)
+    private show_err := false;
+    
+    protected function ShouldRenderItem(item: TestInfoContainer): boolean; override := show_err or (item.test_sucessful=nil) or item.test_sucessful.Value;
+    
+    protected procedure HandleHeaderClick(e: System.Windows.Input.MouseButtonEventArgs); override;
+    begin
+      
+      if e.ChangedButton = System.Windows.Input.MouseButton.Middle then
+        show_err := not show_err else
+        inherited;
+      
+      self.InvalidateMeasure;
+      e.Handled := true;
+    end;
     
   end;
   
@@ -94,59 +158,46 @@ type
     
     protected procedure SetCounter(main_counter: MinimizationCounter; descr: string);
     begin
-      
       var sr := new SmoothResizer;
       self.Child := sr;
+      sr.SmoothX := true;
+      sr.SmoothY := true;
+//      sr.FillX := false;
       
-      var layer_counters_cont := new DisplayList;
-      sr.Content := layer_counters_cont;
-      layer_counters_cont.VerticalAlignment := System.Windows.VerticalAlignment.Top;
-      layer_counters_cont.ChildrenShift := 15;
+      var layers_cont := new SimpleDisplayList;
+      sr.Content := layers_cont;
+      layers_cont.ItemsShift := 15;
+      layers_cont.VerticalAlignment := System.Windows.VerticalAlignment.Top;
       
-      var main_counter_container := new CounterContainer(main_counter, descr);
-      layer_counters_cont.Header := main_counter_container;
+      layers_cont.Header := new CounterContainer(main_counter, descr);
       
-      main_counter.LayerAdded += layer_counter->layer_counters_cont.Dispatcher.InvokeAsync(()->
-      try
+      main_counter.LayerAdded += layer_counter->layers_cont.Dispatcher.Invoke(()->
+      begin
         var sr := new SmoothResizer;
+        sr.SmoothX := true;
+        sr.SmoothY := true;
+//        sr.FillX := false;
         
-        var dl := new DisplayList;
-        sr.Content := dl;
-        dl.Margin := new Thickness(0,5,0,0);
-        dl.ChildrenShift := 10;
-        dl.VerticalAlignment := System.Windows.VerticalAlignment.Top;
-        dl.ShowChildren := false;
+        var tests_cont := new LayerTestsContainer;
+        sr.Content := tests_cont;
+        tests_cont.ItemsShift := 10;
+        var ToDo := 0; //ToDo привязать и к изменению размера окна
+        tests_cont.MaxItemsHeight := Application.Current.MainWindow.Height*0.8;
+        tests_cont.Margin := new Thickness(0,5,0,0);
+        tests_cont.VerticalAlignment := System.Windows.VerticalAlignment.Top;
         
         var cc := new CounterContainer(layer_counter, $'by {layer_counter.LayerRemoveCount}');
-        dl.Header := cc;
+//        sp.Children.Add(cc);
+        tests_cont.Header := cc;
         
-        var NewTestInfo: (RemTestInfo, DisplayList)->();
-        NewTestInfo := (ti, cont_dl)->cc.Dispatcher.Invoke(()->
+        layer_counter.NewTestInfo += ti->cc.Dispatcher.Invoke(()->
         begin
-          var outer_el: FrameworkElement;
-          
-          var header := new TestInfoContainer(ti);
-          outer_el := header;
-          header.Margin := new Thickness(0,3,0,0);
-          
-          if ti is ContainerTestInfo(var cti) then
-          begin
-            var sub_dl := new DisplayList;
-            outer_el := sub_dl;
-            sub_dl.ChildrenShift := 7;
-            sub_dl.ShowChildren := false;
-            sub_dl.Header := header;
-            cti.SubTestAdded += ti->NewTestInfo(ti, sub_dl);
-          end;
-          
-          cont_dl.Children.Add(outer_el, header);
+          var tic := new TestInfoContainer(ti);
+          tests_cont.AddElement(tic);
+          tic.TestSucessfulChanged += ts->tests_cont.InvalidateMeasure();
         end);
-        layer_counter.NewTestInfo += ti->NewTestInfo(ti, dl);;
         
-        layer_counters_cont.Children.Add(sr, cc);
-      except
-        on e: Exception do
-          MessageBox.Show(e.ToString);
+        layers_cont.AddElement(sr, cc);
       end);
       
     end;

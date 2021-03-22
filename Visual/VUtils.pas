@@ -39,7 +39,7 @@ type
         end;
       except
         on e: Exception do
-          Writeln(e.ToString);
+          MessageBox.Show(e.ToString);
       end).Start;
       all[res_name] := self;
     end;
@@ -85,11 +85,43 @@ type
     
   end;
   
+  StackedHeap = class(Grid)
+    
+    protected function MeasureOverride(availableSize: Size): Size; override;
+    begin
+      Result := default(Size);
+      foreach var item: UIElement in self.Children do
+      begin
+        item.Measure(availableSize);
+        Result. Width := Result. Width.ClampBottom(item.DesiredSize. Width);
+        Result.Height := Result.Height.ClampBottom(item.DesiredSize.Height);
+      end;
+      
+//      Writeln(Result);
+//      Writeln(self.GetType);
+//      Writeln(self.Parent.GetType);
+//      foreach var item: UIElement in self.Children do
+//      begin
+//        Writeln(item.GetType);
+//        Writeln(item.DesiredSize);
+//      end;
+//      Writeln('='*30);
+      
+    end;
+    
+    protected function ArrangeOverride(finalSize: Size): Size; override;
+    begin
+      foreach var item: UIElement in self.Children do
+        item.Arrange(new Rect(finalSize));
+      Result := finalSize;
+    end;
+    
+  end;
+  
   SmoothDoubleAnimation = sealed class(DoubleAnimationBase)
     private const default_eps = 0.1;
     private const default_k = 0.35;
     private const tick_scale = 1000000;
-    private static rest_time := TimeSpan.FromMilliseconds(70);
     
     private curr_val: real;
     private target: ()->real;
@@ -109,17 +141,12 @@ type
     
     public function GetCurrentValueCore(defaultOriginValue, defaultDestinationValue: real; ac: AnimationClock): real; override;
     begin
+      var target := self.target();
       
-      if ac.CurrentTime.Value > rest_time then
-      begin
-        var target := self.target();
-        
-        var l := target-curr_val;
-        if Abs(l) < eps then
-          curr_val := target else
-          curr_val += l * (1 - k) ** (tick_scale/(ac.CurrentTime.Value - last_t).Ticks);
-        
-      end;
+      var l := target-curr_val;
+      if Abs(l) < eps then
+        curr_val := target else
+        curr_val += l * (1 - k) ** (tick_scale/(ac.CurrentTime.Value - last_t).Ticks);
       
       last_t := ac.CurrentTime.Value;
       Result := curr_val;
@@ -168,31 +195,115 @@ type
       end;
     end;
     
+    protected function MeasureOverride(availableSize: Size): Size; override := new Size(2,2);
+    
   end;
   
   SmoothResizer = class(ContentControl)
-    public ExtentSize: Size;
+    private ExtentX, ExtentY: real;
     
-    private static AnimXLimitProp := DependencyProperty.Register('AnimXLimit', typeof(real), typeof(SmoothResizer), new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.AffectsMeasure));
-    private static AnimYLimitProp := DependencyProperty.Register('AnimYLimit', typeof(real), typeof(SmoothResizer), new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.AffectsMeasure));
+    public constructor :=
+    self.ClipToBounds := true;
     
+    {$region AnimLimit}
+    
+    private static AnimXLimitProp := DependencyProperty.Register(
+      'AnimXLimit', typeof(real), typeof(SmoothResizer),
+      new FrameworkPropertyMetadata(
+        0.0, FrameworkPropertyMetadataOptions.AffectsMeasure
+      )
+    );
     public property AnimXLimit: real read real(GetValue(AnimXLimitProp)) write SetValue(AnimXLimitProp, value);
+    
+    private static AnimYLimitProp := DependencyProperty.Register(
+      'AnimYLimit', typeof(real), typeof(SmoothResizer),
+      new FrameworkPropertyMetadata(
+        0.0, FrameworkPropertyMetadataOptions.AffectsMeasure
+      )
+    );
     public property AnimYLimit: real read real(GetValue(AnimYLimitProp)) write SetValue(AnimYLimitProp, value);
     
-    public SmoothX := true;
-    public SmoothY := true;
+    {$endregion AnimLimit}
     
-    private snap_x_f, snap_y_f: real->real;
-    public procedure SnapX(val_f: real->real);
+    {$region Snap}
+    
+    private snap_x := false;
+    public procedure SnapX;
     begin
-      lock self do snap_x_f := val_f;
+      Dispatcher.VerifyAccess;
+      snap_x := true;
       self.InvalidateMeasure;
     end;
-    public procedure SnapY(val_f: real->real);
+    
+    private snap_y := false;
+    public procedure SnapY;
     begin
-      lock self do snap_y_f := val_f;
+      Dispatcher.VerifyAccess;
+      snap_y := true;
       self.InvalidateMeasure;
     end;
+    
+    {$endregion Snap}
+    
+    {$region Smooth}
+    
+    private _SmoothX := false;
+    public property SmoothX: boolean read _SmoothX write
+    begin
+      if _SmoothX=value then exit;
+      _SmoothX := value;
+      self.InvalidateMeasure;
+    end;
+    
+    private _SmoothY := false;
+    public property SmoothY: boolean read _SmoothY write
+    begin
+      if _SmoothY=value then exit;
+      _SmoothY := value;
+      self.InvalidateMeasure;
+    end;
+    
+    {$endregion Smooth}
+    
+    {$region Fill}
+    
+    private _FillX := true;
+    public property FillX: boolean read _FillX write
+    begin
+      if FillX=value then exit;
+      _FillX := value;
+      self.InvalidateMeasure;
+    end;
+    
+    private _FillY := true;
+    public property FillY: boolean read _FillY write
+    begin
+      if FillY=value then exit;
+      _FillY := value;
+      self.InvalidateMeasure;
+    end;
+    
+    {$endregion Fill}
+    
+    {$region Alignment}
+    
+    private _HorizontalAlignment := System.Windows.HorizontalAlignment.Stretch;
+    public property HorizontalAlignment: System.Windows.HorizontalAlignment read _HorizontalAlignment write
+    begin
+      if _HorizontalAlignment=value then exit;
+      _HorizontalAlignment := value;
+      self.InvalidateMeasure;
+    end;
+    
+    private _VerticalAlignment := System.Windows.VerticalAlignment.Stretch;
+    public property VerticalAlignment: System.Windows.VerticalAlignment read _VerticalAlignment write
+    begin
+      if _VerticalAlignment=value then exit;
+      _VerticalAlignment := value;
+      self.InvalidateMeasure;
+    end;
+    
+    {$endregion Alignment}
     
     protected procedure OnContentChanged(oldContent, newConten: object); override;
     begin
@@ -205,8 +316,8 @@ type
           if SmoothY then self.BeginAnimation(SmoothResizer.AnimYLimitProp, nil);
         end else
         begin
-          if SmoothX then self.BeginAnimation(SmoothResizer.AnimXLimitProp, new SmoothDoubleAnimation(AnimXLimit, ()->self.ExtentSize.Width));
-          if SmoothY then self.BeginAnimation(SmoothResizer.AnimYLimitProp, new SmoothDoubleAnimation(AnimYLimit, ()->self.ExtentSize.Height));
+          if SmoothX then self.BeginAnimation(SmoothResizer.AnimXLimitProp, new SmoothDoubleAnimation(AnimXLimit, ()->self.ExtentX));
+          if SmoothY then self.BeginAnimation(SmoothResizer.AnimYLimitProp, new SmoothDoubleAnimation(AnimYLimit, ()->self.ExtentY));
         end;
       
       self.InvalidateMeasure;
@@ -218,59 +329,101 @@ type
       
       if VisualChildrenCount=0 then exit;
       var child := GetVisualChild(0) as UIElement;
-      if child=nil then exit;
+      if child=nil then raise new System.InvalidOperationException;
       
       child.Measure(availableSize);
-      ExtentSize := new Size(
-        Min(child.DesiredSize.Width,  availableSize.Width),
-        Min(child.DesiredSize.Height, availableSize.Height)
-      );
+      ExtentX := if FillX then
+      (
+        if not real.IsInfinity(availableSize.Width) then
+          Max(child.DesiredSize.Width, availableSize.Width) else
+          child.DesiredSize.Width
+      ) else
+        child.DesiredSize.Width;
+      ExtentY := if FillY then
+      (
+        if not real.IsInfinity(availableSize.Height) then
+          Max(child.DesiredSize.Height, availableSize.Height) else
+          child.DesiredSize.Height
+      ) else
+        child.DesiredSize.Height;
       
-//      lock output do
-//      begin
-//        Writeln((child as ContentPresenter).Content?.GetType);
-//        Writeln(availableSize);
+//      SeqWhile(self as FrameworkElement, el->el.Parent as FrameworkElement, el->el<>nil)
+//      .PrintLines(el->el.GetType);
+//      Writeln(availableSize.Width);
+//      Writeln(child.DesiredSize.Width);
+//      Writeln(ExtentX);
+//      Writeln('='*30);
+      
+//      if Parent.GetType.ToString.Contains('MinimizationLog') then
 //        Writeln(child.DesiredSize);
-//        Writeln(ExtentSize);
-//        Writeln('='*30);
-//      end;
       
-      lock self do
+      if snap_x then
       begin
-        
-        if snap_x_f<>nil then
-        begin
-          if not SmoothX then raise new System.InvalidOperationException;
-          self.BeginAnimation(SmoothResizer.AnimXLimitProp, new SmoothDoubleAnimation(snap_x_f(ExtentSize.Width ), ()->self.ExtentSize.Width ));
-          snap_x_f := nil;
-        end;
-        
-        if snap_y_f<>nil then
-        begin
-          if not SmoothY then raise new System.InvalidOperationException;
-          self.BeginAnimation(SmoothResizer.AnimYLimitProp, new SmoothDoubleAnimation(snap_y_f(ExtentSize.Height), ()->self.ExtentSize.Height));
-          snap_y_f := nil;
-        end;
-        
+        if not SmoothX then raise new System.InvalidOperationException;
+        self.BeginAnimation(SmoothResizer.AnimXLimitProp, new SmoothDoubleAnimation(ExtentX, ()->self.ExtentX));
+        snap_x := false;
       end;
       
+      if snap_y then
+      begin
+        if not SmoothY then raise new System.InvalidOperationException;
+        self.BeginAnimation(SmoothResizer.AnimYLimitProp, new SmoothDoubleAnimation(ExtentY, ()->self.ExtentY));
+        snap_y := false;
+      end;
+      
+//      Result := new Size(
+//        if SmoothX then AnimXLimit else ExtentX,
+//        if SmoothY then AnimYLimit else ExtentY
+//      );
       Result := new Size(
-        SmoothX ? AnimXLimit : child.DesiredSize.Width,
-        SmoothY ? AnimYLimit : child.DesiredSize.Height
+        if SmoothX then AnimXLimit else child.DesiredSize.Width,
+        if SmoothY then AnimYLimit else child.DesiredSize.Height
       );
       
-//      if Result <> availableSize then
-//        child.Measure(Result);
+      // SmoothResizer shouldn't re-measure child, because measure only determines min size
+//      child.Measure(Result);
+      
     end;
     
     protected function ArrangeOverride(finalSize: Size): Size; override;
     begin
-      Result := finalSize;
+      Result := default(Size);
       
+      // Proper check is in MeasureOverride
       var child := GetVisualChild(0) as UIElement;
       if child=nil then exit;
       
-      child.Arrange(new Rect(finalSize));
+      Result.Width :=
+        if self.HorizontalAlignment <> System.Windows.HorizontalAlignment.Stretch then child.DesiredSize.Width else
+        if FillX then finalSize.Width.ClampBottom(child.DesiredSize.Width) else
+        if SmoothX then AnimXLimit else
+          child.DesiredSize.Width;
+      
+      Result.Height :=
+        if self.VerticalAlignment <> System.Windows.VerticalAlignment.Stretch then child.DesiredSize.Height else
+        if FillY then finalSize.Height.ClampBottom(child.DesiredSize.Height) else
+        if SmoothY then AnimYLimit else
+          child.DesiredSize.Height;
+      
+      var origin: Point;
+      case self.HorizontalAlignment of
+        System.Windows.HorizontalAlignment.Left: origin.X := 0;
+        System.Windows.HorizontalAlignment.Stretch,
+        System.Windows.HorizontalAlignment.Center: origin.X := (finalSize.Width-Result.Width).ClampBottom(0)/2;
+        System.Windows.HorizontalAlignment.Right:  origin.X := (finalSize.Width-Result.Width).ClampBottom(0);
+        else raise new System.InvalidOperationException(self.HorizontalAlignment.ToString);
+      end;
+      case self.VerticalAlignment of
+        System.Windows.VerticalAlignment.Top: origin.Y := 0;
+        System.Windows.VerticalAlignment.Stretch,
+        System.Windows.VerticalAlignment.Center: origin.Y := (finalSize.Height-Result.Height).ClampBottom(0)/2;
+        System.Windows.VerticalAlignment.Bottom: origin.Y := (finalSize.Height-Result.Height).ClampBottom(0);
+        else raise new System.InvalidOperationException(self.VerticalAlignment.ToString);
+      end;
+      
+//      Writeln(new Rect(origin, Result));
+      child.Arrange(new Rect(origin, Result));
+      Result := finalSize;
     end;
     
   end;

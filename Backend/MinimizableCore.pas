@@ -81,6 +81,13 @@ type
     
     public property DisplayName: string read; abstract;
     
+    public event DisplayNameUpdated: ()->();
+    protected procedure InvokeDisplayNameUpdated;
+    begin
+      var DisplayNameUpdated := DisplayNameUpdated;
+      if DisplayNameUpdated<>nil then DisplayNameUpdated();
+    end;
+    
   end;
   
   SourceTestInfo = sealed class(TestInfo)
@@ -103,17 +110,30 @@ type
     
   end;
   
+  CommentTestInfo = sealed class(TestInfo)
+    private text: string;
+    
+    public constructor(text: string);
+    begin
+      inherited Create(nil);
+      self.text := text;
+    end;
+    
+    public function EnmrNodes: sequence of MinimizableNode; override := new MinimizableNode[0];
+    
+    public property DisplayName: string read text; override;
+    
+  end;
+  
   RemTestInfo = abstract class(TestInfo)
     private rem: HashSet<MinimizableNode>;
     
     private total_unwraped: integer? := nil;
     
-    public event TotalUnwrapedChanged: ()->();
     public procedure SetUnwraped(total_unwraped: integer);
     begin
       self.total_unwraped := total_unwraped;
-      var TotalUnwrapedChanged := self.TotalUnwrapedChanged;
-      if TotalUnwrapedChanged<>nil then TotalUnwrapedChanged();
+      InvokeDisplayNameUpdated;
     end;
     
     public event TestDone: boolean->();
@@ -163,9 +183,9 @@ type
   
   ContainerTestInfo = abstract class(RemTestInfo)
     
-    public event SubTestAdded: RemTestInfo->();
+    public event SubTestAdded: TestInfo->();
     
-    public procedure AddSubTest(test: RemTestInfo);
+    public procedure AddSubTest(test: TestInfo);
     begin
       var SubTestAdded := self.SubTestAdded;
       if SubTestAdded<>nil then SubTestAdded(test);
@@ -179,7 +199,7 @@ type
     
   end;
   
-  RecombineTestInfo = sealed class(ContainerTestInfo)
+  RecombineTestInfo = sealed class(RemTestInfo)
     
     public property DisplayName: string read $'Recombine: {parent.EnmrNodes.Count} - {Removing.Count} => {total_unwraped?.ToString ?? ''...''}'; override;
     
@@ -208,9 +228,9 @@ type
     public start_layer: integer;
     public base_path: string;
     public exec_test: (string, TestInfo)->boolean;
-    public unique_names := new HashSet<string>;
     public source_test_info: TestInfo;
     
+    private unique_names := new HashSet<string>;
     public function EnsureUniqueName(name: string): string;
     begin
       Result := name;
@@ -249,11 +269,11 @@ type
     public function Execute: boolean;
     
     protected event ReportLineCount: integer->();
-    protected event NodeCountChanged: (integer, string)->();
+    protected event ReportMinimizedCount: integer->();
     protected event StableDirCreated: string->();
-    public event NewTestInfo: RemTestInfo->();
+    public event NewTestInfo: TestInfo->();
     
-    public procedure InvokeNewTestInfo(ti: RemTestInfo);
+    protected procedure InvokeNewTestInfo(ti: TestInfo);
     begin
       var NewTestInfo := self.NewTestInfo;
       if NewTestInfo<>nil then NewTestInfo(ti);
@@ -387,10 +407,12 @@ function MinimizationCounter.Execute: boolean;
 begin
   Result := false;
   
+  //ToDo всё же плохо... 75k тестов чтоб уменьшить 8k => 4k
+  // - Таким образом даже удаление по 1 элементу - быстрее
+  // - Надо, наверное, проходить сначала быстрые уровни от c.GetLayerForCount до 1,
+  //   а затем длинные назад от 1 до c.GetLayerForCount
   var curr_layer := c.start_layer;
-  
-  var twice_nodes_left := c.removable_left.Count*2;
-  var twice_initial_removable_count := twice_nodes_left;
+  var initial_removables_count := c.removable_left.Count;
   
   var l: MinimizationLayerCounter;
   while true do
@@ -408,12 +430,7 @@ begin
       l := new MinimizationLayerCounter(c, curr_layer);
       
       l.ReportLineCount += line_count->self.ReportLineCount(line_count);
-      l.NodeCountChanged += (dnc, report_name)->
-      begin
-        twice_nodes_left += dnc;
-//        if report_name<>nil then $'{report_name}: actual={c.removable_left.Count} progress={twice_nodes_left/2}'.Println;
-        InvokeValueChanged(1 - twice_nodes_left/twice_initial_removable_count);
-      end;
+      l.ReportMinimizedCount += minimized_count->InvokeValueChanged(1 - (c.removable_left.Count - minimized_count) / initial_removables_count);
       l.StableDirCreated += dir->
       begin
         self.last_stable_dir := dir;
@@ -480,7 +497,7 @@ type
       
     end;
     
-    public function Combine(source_test: TestInfo; test_func: RemTestInfo->boolean; add_as_sub_test: RemTestInfo->()): boolean;
+    public function Combine(source_test: TestInfo; test_func: RemTestInfo->boolean; add_as_sub_test: TestInfo->()): boolean;
     begin
       Result := false;
       if Branches.Count=0 then exit;
@@ -526,6 +543,7 @@ type
     begin
       var hs := NewAllNodes.ToHashSet;
       hs.UnionWith(self.AllNodes);
+      if hs.Count = NewAllNodes.Count then exit;
       var sweep_test := new SweepTestInfo(hs, hs.Count-NewAllNodes.Count, source_test);
       cont.AddSubTest(sweep_test);
       if test_func(sweep_test) then
@@ -554,11 +572,7 @@ begin
     c.n.UnWrapTo(curr_test_dir, n->
     begin
       Result := not ti.Removing.Contains(n);
-      if Result then
-      begin
-        if not n.IsInvulnerable then
-          unwraped_c += 1;
-      end;
+      unwraped_c += integer( Result and not n.IsInvulnerable );
     end);
     ti.SetUnwraped(unwraped_c);
     
@@ -572,11 +586,61 @@ begin
   var all_remove_set := new HashSet<MinimizableNode>;
   {$region wild tests}
   begin
-    var max_tests_before_giveup := Round( c.removable_left.Count / ( self.layer ** (1/minimization_p) ) );
-    var cts := new System.Threading.CancellationTokenSource;
     
-    var giveup_counter := 0;
-    var giveup_lock := new object;
+    {$region max_test_before_abort}
+    // s(x) = max_test_before_abort   : Кол-во тестов перед сбросом
+    // x    = successful_c            : Кол-во успешных тестов
+    // n    = c.removable_left.Count  : Кол-во удалябельных элементов
+    // l    = self.layer              : Кол-во удаляемых каждой операцией элементов (текущий уровень)
+    // k    = max_tests_k             : Коэфициент согнутости графика s (чем ближе k->(1+0)*n - тем быстрее s увеличивается в начале)
+    // 
+    // Нужна такая s, чтоб:
+    // 1. Если успешных тестов нет, то выйти надо после n/l тестов                      : s(0)=n/l
+    // 2. При каждом успешном тесте добавлять к верхней границе падающее значение       : dds/dx^2<0, но ds/dx>0
+    // 3. Если все тесты успешные - после последнего надо чтоб все тесты были разрешены : s(n)=n
+    // 
+    // Возьмём график k - 1/x, т.к. он сразу удовлетворяет п.2.
+    // (в графике k2/x коэфициент k2 маштабирует одновременно x и y, поэтому его проще оставить 1)
+    // Маштабируем сдвигаем значения x так, чтоб:
+    // - x=0 -> s(x)=n/l
+    // - x=n -> s(x)=n
+    // После всех приведений получается что k может быть произвольным
+    // (но даёт мусор при k<1, потому что график выворачивает наизнанку)
+    // Берём k такой, чтоб (ds/dx)(0)=s(0), то есть первый успешный тест практически удваивает s
+    // 
+    // График:
+    // https://www.desmos.com/calculator/aqatviizx6
+    
+    //ToDo А что если n уменьшится, а start_layer так и останется?
+    var max_tests_k := c.removable_left.Count *
+      (c.start_layer-1-real(c.removable_left.Count)*c.start_layer) /
+      (c.start_layer-1-real(c.removable_left.Count))/c.start_layer;
+    var floor_ndl := c.removable_left.Count div self.layer; // Floor(n/l);
+    
+    var max_test_before_abort_f := function(successful_c: integer): integer->
+    begin
+      var x := successful_c;
+      var n := c.removable_left.Count;
+      var l := self.layer;
+      var k := max_tests_k;
+      if l=1 then
+      begin
+        Result := n;
+        exit;
+      end;
+      var xmxdl := x-x/l;
+      Result := Ceil(floor_ndl + xmxdl * (k-floor_ndl) / (k+xmxdl-n) );
+    end;
+    var max_test_before_abort := floor_ndl;
+    
+    var successful_c := 0;
+    var done_c := 0;
+    var test_done_lock := new object;
+    
+    var cts := new System.Threading.CancellationTokenSource;
+    {$endregion max_test_before_abort}
+    
+    InvokeNewTestInfo( new CommentTestInfo($'Layer start: {max_test_before_abort} / {c.removable_left.Count}') );
     
     var InvokeValueChanged := self.InvokeValueChanged; //ToDo #2197
     foreach var remove_set in ExecMany(
@@ -609,18 +673,19 @@ begin
           Result := curr_removed;
         end;
         
-        lock giveup_lock do
-          if (self.layer<>1) and test_success and (new_removed_count*2 >= self.layer) then
+        if new_removed_count*2 < self.layer then test_success := false;
+        lock test_done_lock do
+        begin
+          done_c += 1;
+          successful_c += integer(test_success);
+          max_test_before_abort := max_test_before_abort_f(successful_c);
+          if (done_c>=max_test_before_abort) and not cts.IsCancellationRequested then
           begin
-            giveup_counter := 0;
-            InvokeValueChanged(0);
-          end else
-          begin
-            giveup_counter += 1;
-            InvokeValueChanged(giveup_counter.ClampTop(max_tests_before_giveup)/max_tests_before_giveup);
-            if giveup_counter>=max_tests_before_giveup then
-              cts.Cancel;
+            cts.Cancel;
+            InvokeNewTestInfo( new CommentTestInfo('Abort: No enough of a result') );
           end;
+          InvokeValueChanged( done_c.ClampTop(max_test_before_abort) / max_test_before_abort );
+        end;
         
       end)),
       cts.Token
@@ -631,12 +696,14 @@ begin
       
       lock all_remove_set do
       begin
-        var prev_count := all_remove_set.Count;
         all_remove_set.UnionWith(remove_set);
-        self.NodeCountChanged(-(all_remove_set.Count - prev_count), nil);
+        self.ReportMinimizedCount(all_remove_set.Count);
         
-        if all_remove_set.Count*self.layer >= c.removable_left.Count then
+        if (all_remove_set.Count*2 >= c.removable_left.Count) and not cts.IsCancellationRequested then
+        begin
           cts.Cancel;
+          InvokeNewTestInfo( new CommentTestInfo('Abort: Too much of a result') );
+        end;
         
         self.ReportLineCount(c.n.CountLines(n->not all_remove_set.Contains(n)));
       end;
@@ -654,15 +721,15 @@ begin
   c.source_test_info := new StableTestInfo(t.AllNodes, c.source_test_info);
   c.n.Cleanup(n->n in t.AllNodes);
   self.ReportLineCount(c.n.CountLines(nil));
-  var prev_rem_left_c := c.removable_left.Count;
   c.removable_left.RemoveAll(n->n in t.AllNodes);
-  self.NodeCountChanged((c.removable_left.Count-prev_rem_left_c)*2 + all_remove_set.Count, nil);
+  self.ReportMinimizedCount(0);
   
   var stable_dir := System.IO.Path.Combine(c.base_path, c.EnsureUniqueName($'stable[{c.removable_left.Count}]'));
   c.n.UnWrapTo(stable_dir, nil);
   
   var StableDirCreated := self.StableDirCreated;
   if StableDirCreated<>nil then StableDirCreated(stable_dir);
+  InvokeNewTestInfo( new CommentTestInfo('Layer done') );
 end;
 
 end.

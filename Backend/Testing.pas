@@ -15,7 +15,6 @@ type
     public property Parent: TestResult read nil; virtual;
     
     public function GetShortDescription: string; abstract;
-    public procedure ReportTo(dir: string); abstract;
     
   end;
   
@@ -67,6 +66,8 @@ type
           is_module := true else
         if System.IO.File.Exists(System.IO.Path.ChangeExtension(full_fname, '.exe')) then
           is_module := false else
+        if ReadLines(full_fname).Any(l->l.Contains('{'+'$savepcu false}')) then
+          is_module := true else
           raise new System.NotSupportedException($'Can''t find .pcu or .exe result file of "{full_fname}"');
         
       end;
@@ -99,7 +100,6 @@ type
     public constructor(any_tr: TestResult; dir: string) :=
     while true do
     begin
-      if any_tr=nil then raise new System.ArgumentException;
       if any_tr is CompResult(var ctr) then
       begin
         self.dir          := dir;
@@ -109,6 +109,7 @@ type
         Test;
         exit;
       end;
+      if any_tr=nil then raise new System.ArgumentException;
       any_tr := any_tr.Parent;
     end;
     
@@ -129,26 +130,6 @@ type
         if Result.Contains('Compile errors:') and (a.Length>1) then
           Result := a[1];
       end;
-    end;
-    
-    public procedure ReportTo(dir: string); override;
-    begin
-      var sw := new System.IO.StreamWriter(System.IO.Path.Combine(dir, 'CompResult.dat'), false, System.Text.Encoding.UTF8);
-      loop 3 do sw.WriteLine;
-      
-      sw.WriteLine('# otp');
-      sw.WriteLine(otp);
-      sw.WriteLine;
-      
-      if not string.IsNullOrWhiteSpace(err) then
-      begin
-        sw.WriteLine('# err');
-        sw.WriteLine(err);
-        sw.WriteLine;
-      end;
-      
-      loop 1 do sw.WriteLine;
-      sw.Close;
     end;
     
     public static function AreSame(ctr1, ctr2: CompResult): boolean;
@@ -256,27 +237,6 @@ type
     public function GetShortDescription: string; override :=
     if err=nil then otp else
     $'{err.ErrType<>nil ? err.ErrType : err.GetType.ToString}: {err.Message<>nil ? err.Message : err.AllText}';
-    
-    public procedure ReportTo(dir: string); override;
-    begin
-      if Parent<>nil then Parent.ReportTo(dir);
-      var sw := new System.IO.StreamWriter(System.IO.Path.Combine(dir, 'ExecResult.dat'), false, System.Text.Encoding.UTF8);
-      loop 3 do sw.WriteLine;
-      
-      sw.WriteLine('# otp');
-      sw.WriteLine(otp);
-      sw.WriteLine;
-      
-      if err<>nil then
-      begin
-        sw.WriteLine('# err');
-        sw.WriteLine(err.AllText.Trim(#13#10.ToArray));
-        sw.WriteLine;
-      end;
-      
-      loop 1 do sw.WriteLine;
-      sw.Close;
-    end;
     
     public static function AreSame(etr1, etr2: ExecResult): boolean;
     begin

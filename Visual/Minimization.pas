@@ -47,7 +47,10 @@ type
       self.Background := new SolidColorBrush(Color.FromRgb(240,240,240));
       
       self.Child := sr;
-//      sr.SmoothY := false;
+      sr.SmoothX := true;
+      sr.SmoothY := true;
+      sr.FillX := false;
+      sr.HorizontalAlignment := System.Windows.HorizontalAlignment.Left;
       
       var spoiler_sp := new StackPanel;
       sr.Content := spoiler_sp;
@@ -55,6 +58,12 @@ type
       var spoiler_title := new ClickableContent;
       spoiler_sp.Children.Add(spoiler_title);
       spoiler_title.Margin := new Thickness(5);
+      spoiler_title.Click += (o,e)->
+      begin
+        spoiler_opened := not spoiler_opened;
+        ValidateSpoiler;
+        spoiler_clicked := true;
+      end;
       
       var spoiler_title_tb := new TextBlock;
       spoiler_title.Content := spoiler_title_tb;
@@ -63,12 +72,6 @@ type
       
       spoiler_sp.Children.Add(stage_parts_sp);
       stage_parts_sp.Margin := new Thickness(5,0,5,5);
-      spoiler_title.Click += (o,e)->
-      begin
-        spoiler_opened := not spoiler_opened;
-        ValidateSpoiler;
-        spoiler_clicked := true;
-      end;
       
     end;
     private constructor := raise new System.InvalidOperationException;
@@ -78,7 +81,8 @@ type
       msp.ReportLineCount += line_count->self.ReportLineCount(line_count);
       Dispatcher.Invoke(()->
       begin
-        self.stage_parts_sp.Children.Add(msp.MakeUIElement);
+        var msp_visual := msp.MakeUIElement;
+        self.stage_parts_sp.Children.Add(msp_visual);
         Application.Current.MainWindow.Title := $'PES: Stage={stage_num}, stage_part={msp.GetType.Name}';
       end);
       msp.StagePartStarted += ()->
@@ -114,7 +118,9 @@ type
       
       var svsbsr := new SmoothResizer;
       self.Child := svsbsr;
-      svsbsr.SmoothY := false;
+      svsbsr.SmoothX := true;
+      svsbsr.FillX := false;
+      svsbsr.HorizontalAlignment := System.Windows.HorizontalAlignment.Left;
       
       var sv := new ScrollViewer;
       svsbsr.Content := sv;
@@ -135,15 +141,9 @@ type
         begin
           var sp := sp; //ToDo #2344
           
-          //ToDo #2342
-          var ms: MinimizationStage; sp.Dispatcher.Invoke(()->
-          begin
-            ms := new MinimizationStage(i);
-            if prev_ms<>nil then ms.sr.SnapX(w->Min(prev_ms.sr.ExtentSize.Width, w));
-          end);
+          var ms := sp.Dispatcher.Invoke(()->new MinimizationStage(i));
           
-          //ToDo #2342
-          ms.StagePartStarted += ()->sp.Dispatcher.Invoke(()->begin sp.Children.Add(ms) end);
+          ms.StagePartStarted += ()->sp.Dispatcher.Invoke(()->sp.Children.Add(ms));
           ms.ReportLineCount += line_count->self.ReportLineCount(line_count);
           var new_source_dir := ms.Execute(last_source_dir, expected_tr);
           
@@ -224,13 +224,21 @@ type
     private procedure ValidateRects(val, l: real);
     begin
       // val  : Текущее значение в центре квадрата
-      // l    : Размер квадрата в пикселях
+      // l    : Длина стороны квадрата в пикселях
       
-      var val_1px_pow :=  LogN(sqrt(2), val*2/l);
-      var val_l_pow :=    LogN(sqrt(2), val*2);
+      // Степень на уровне значения, которое будет соответствовать верхней границе квадрата
+      var val_l_pow := LogN(Sqrt(2), val*2);
+      // Степень на уровне значения, которое будет соответствовать одному пикселю
+//      var val_1px_pow := LogN(Sqrt(2), val/(l/2) );
+//      var val_1px_pow := LogN(Sqrt(2), val*2/l );
+      var val_1px_pow := val_l_pow - LogN(Sqrt(2), l.ClampBottom(1)); // .Clamp потому что считать отрицательную (или даже NaN) разницу нет смысла
       
-      var shift := val_1px_pow-System.Math.Floor(val_1px_pow);
-      var rect_c := Floor((val_l_pow-val_1px_pow) - shift);
+      // Надо принимать во внимание 2 вещи:
+      // 1. В теории прямоугольников будет (val_l_pow-val_1px_pow), но надо применить Floor
+      // 2. Первый прямоугольник будет не прямо на верхней границе, а немного под ней - на уровне Floor(val_l_pow)
+      
+      // .Clamp потому что если первый прямоугольник уже меньше 1 пикселя - рисовать надо 0 а не -1 прямоугольников
+      var rect_c := Floor(System.Math.Floor(val_l_pow) - val_1px_pow).ClampBottom(0);
       
       var prev_rect_c := rects.Length;
       if prev_rect_c <> rect_c then
@@ -344,10 +352,17 @@ type
     
   end;
   
-  MinimizationViewer = sealed class(DockPanel)
+  MinimizationViewer = sealed class(Grid)
     
     public constructor(inital_state_dir: string; tr: TestResult);
     begin
+      
+      var cd1 := new ColumnDefinition;
+      cd1.Width := GridLength.Auto;
+      self.ColumnDefinitions.Add(cd1);
+      
+      var cd2 := new ColumnDefinition;
+      self.ColumnDefinitions.Add(cd2);
       
       var lines_count := 1.0;
 //      var lines_count := CountLines(inital_state_dir);
@@ -355,6 +370,7 @@ type
       begin
         var log := new MinimizationLog(inital_state_dir, tr);
         self.Children.Add(log);
+        Grid.SetColumn(log, 0);
         log.ReportLineCount += new_line_count->
         begin
           lines_count := new_line_count;
@@ -364,6 +380,7 @@ type
       begin
         var graph_dp := new DockPanel;
         self.Children.Add(graph_dp);
+        Grid.SetColumn(graph_dp, 1);
         graph_dp.HorizontalAlignment := System.Windows.HorizontalAlignment.Left;
         
         var trv := new TestResultViewer(tr, nil);

@@ -21,15 +21,23 @@ type
     private static test_mres := new Queue<System.Threading.ManualResetEvent>;
     private static curr_executing_c := 0;
     
-    public constructor(first: boolean; fname, comp_fname: string; when_selected: TestResult->(); change_max_tests: integer->(); when_tested: ()->());
+    public constructor(fname, comp_fname: string; when_selected: TestResult->(); change_max_tests: integer->(); when_tested: ()->());
     begin
-      self.Margin := new Thickness(10*integer(first),5,10,10);
+      self.Margin := new Thickness(0,5,10,10);
       self.BorderThickness := new Thickness(0.5);
       self.BorderBrush := Brushes.Black;
       self.Padding := new Thickness(0,0,0,5);
+      self.Visibility := System.Windows.Visibility.Collapsed;
+      
+      var sr := new SmoothResizer;
+      self.Child := sr;
+      sr.SmoothX := true;
+      sr.SmoothY := true;
+      sr.FillY := false;
+      sr.VerticalAlignment := System.Windows.VerticalAlignment.Top;
       
       var sp := new StackPanel;
-      self.Child := sp;
+      sr.Content := sp;
       
       var wh := new System.Threading.ManualResetEvent(false);
       lock test_mres do
@@ -52,6 +60,7 @@ type
         self.Dispatcher.Invoke(()->
         begin
           sp.Children.Add(new TestResultViewer(ctr, when_selected));
+          self.Visibility := System.Windows.Visibility.Visible;
           when_tested;
         end);
         
@@ -100,18 +109,22 @@ type
     
     public constructor(fname: string; when_selected: TestResult->(); change_max_tests: integer->(); when_tested: ()->());
     begin
+//      self.HorizontalAlignment := System.Windows.HorizontalAlignment.Left;
       
       var header_text := new TextBlock;
       self.Children.Add(header_text);
       header_text.Text := fname;
-      header_text.Margin := new Thickness(10,5,0,0);
+      header_text.Margin := new Thickness(10,5,10,0);
       
-      var sp := new StackPanel;
-      self.Children.Add(sp);
-      sp.Orientation := System.Windows.Controls.Orientation.Horizontal;
+      var b := new Border;
+      self.Children.Add(b);
+      b.Padding := new Thickness(10,0,0,0);
+      
+      var dp := new DockPanel;
+      b.Child := dp;
       
       foreach var comp_fname in Settings.Current.Compilers do
-        sp.Children.Add(new BucketBatchTestViewer(sp.Children.Count=0, fname, comp_fname, when_selected, change_max_tests, when_tested));
+        dp.Children.Add(new BucketBatchTestViewer(fname, comp_fname, when_selected, change_max_tests, when_tested));
       
     end;
     
@@ -187,7 +200,9 @@ type
           
           var flv_wrap := new SmoothResizer;
           flv_border.Child := flv_wrap;
-          flv_wrap.HorizontalAlignment := System.Windows.HorizontalAlignment.Left;
+          flv_wrap.SmoothX := true;
+          flv_wrap.SmoothY := true;
+//          flv_wrap.HorizontalAlignment := System.Windows.HorizontalAlignment.Left;
           
           var flv: FrameworkElement; flv := new BucketFileLoadViewer(GetRelativePath(fname, BucketDir), when_selected,
             delta->self.Dispatcher.Invoke(()->add_pb_max.Invoke(delta)), //ToDo #2237
@@ -197,6 +212,7 @@ type
               if flv_wrap.Content=nil then
               begin
                 flv_wrap.Content := flv;
+                flv_wrap.SnapX;
                 row.Height := GridLength.Auto;
               end;
             end
