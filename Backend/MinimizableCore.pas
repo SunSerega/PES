@@ -177,7 +177,7 @@ type
       self.actually_removed := actually_removed;
     end;
     
-    public property DisplayName: string read $'Wild: {parent.EnmrNodes.Count} - {Removing.Count} ({actually_removed}) => {total_unwraped?.ToString ?? ''...''}'; override;
+    public property DisplayName: string read $'Wild: {parent.EnmrNodes.Count} - {actually_removed} => {total_unwraped?.ToString ?? ''...''}'; override;
     
   end;
   
@@ -288,6 +288,22 @@ type
     end;
     private constructor := raise new System.InvalidOperationException;
     
+    private total_tests: integer;
+    public property DisplayName: string read $'{total_tests} tests by {layer} items';
+    
+    public event DisplayNameUpdated: ()->();
+    protected procedure InvokeDisplayNameUpdated;
+    begin
+      var DisplayNameUpdated := DisplayNameUpdated;
+      if DisplayNameUpdated<>nil then DisplayNameUpdated();
+    end;
+    
+    public procedure SetTotalTests(total_tests: integer);
+    begin
+      self.total_tests := total_tests;
+      InvokeDisplayNameUpdated;
+    end;
+    
   end;
   
   MinimizationCounter = sealed class(Counter)
@@ -296,7 +312,13 @@ type
     public function Execute: boolean;
     
     public event ReportLineCount: integer->();
+    
     public event LayerAdded: MinimizationLayerCounter->();
+    protected procedure InvokeLayerAdded(l: MinimizationLayerCounter);
+    begin
+      var LayerAdded := self.LayerAdded;
+      if LayerAdded<>nil then LayerAdded(l);
+    end;
     
     private last_stable_dir: string := nil;
     public property LastStableDir: string read last_stable_dir;
@@ -414,7 +436,7 @@ begin
   var curr_layer := c.start_layer;
   var initial_removables_count := c.removable_left.Count;
   
-  var l: MinimizationLayerCounter;
+//  var l: MinimizationLayerCounter;
   while true do
   begin
     var InvokeValueChanged := self.InvokeValueChanged; //ToDo #2197
@@ -425,20 +447,17 @@ begin
       exit;
     end;
     
-    if (l=nil) or (l.layer <> curr_layer) then
+//    if (l=nil) or (l.layer <> curr_layer) then
+    var l := new MinimizationLayerCounter(c, curr_layer);
+    
+    l.ReportLineCount += line_count->self.ReportLineCount(line_count);
+    l.ReportMinimizedCount += minimized_count->InvokeValueChanged(1 - (c.removable_left.Count - minimized_count) / initial_removables_count);
+    l.StableDirCreated += dir->
     begin
-      l := new MinimizationLayerCounter(c, curr_layer);
-      
-      l.ReportLineCount += line_count->self.ReportLineCount(line_count);
-      l.ReportMinimizedCount += minimized_count->InvokeValueChanged(1 - (c.removable_left.Count - minimized_count) / initial_removables_count);
-      l.StableDirCreated += dir->
-      begin
-        self.last_stable_dir := dir;
-      end;
-      
-      var LayerAdded := LayerAdded;
-      if LayerAdded<>nil then LayerAdded(l);
+      self.last_stable_dir := dir;
     end;
+    
+    self.InvokeLayerAdded(l);
     
     if l.Execute then
     begin
@@ -619,7 +638,10 @@ begin
     
     var max_test_before_abort_f := function(successful_c: integer): integer->
     begin
-      var x := successful_c;
+      //ToDo successful_c идёт до n, поэтому x никогда не будет больше n/l
+      // - Это с самого начала продумано небыло...
+      // - Если s(n/l)=n - график получается слишком резкий, даже при больших k
+      var x := successful_c / self.layer;
       var n := c.removable_left.Count;
       var l := self.layer;
       var k := max_tests_k;
@@ -629,9 +651,10 @@ begin
         exit;
       end;
       var xmxdl := x-x/l;
-      Result := Ceil(floor_ndl + xmxdl * (k-floor_ndl) / (k+xmxdl-n) );
+      Result := Ceil( floor_ndl + xmxdl * (k-floor_ndl) / (k+xmxdl-n) );
     end;
     var max_test_before_abort := floor_ndl;
+    SetTotalTests(max_test_before_abort);
     
     var successful_c := 0;
     var done_c := 0;
@@ -673,12 +696,13 @@ begin
           Result := curr_removed;
         end;
         
-        if new_removed_count*2 < self.layer then test_success := false;
+//        if new_removed_count*2 < self.layer then test_success := false;
         lock test_done_lock do
         begin
           done_c += 1;
-          successful_c += integer(test_success);
+          successful_c += new_removed_count*integer(test_success);
           max_test_before_abort := max_test_before_abort_f(successful_c);
+          SetTotalTests(max_test_before_abort);
           if (done_c>=max_test_before_abort) and not cts.IsCancellationRequested then
           begin
             cts.Cancel;
@@ -729,7 +753,7 @@ begin
   
   var StableDirCreated := self.StableDirCreated;
   if StableDirCreated<>nil then StableDirCreated(stable_dir);
-  InvokeNewTestInfo( new CommentTestInfo('Layer done') );
+  InvokeNewTestInfo( new CommentTestInfo('Layer completed') );
 end;
 
 end.

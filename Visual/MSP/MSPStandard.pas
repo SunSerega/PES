@@ -15,6 +15,28 @@ type
   
   CounterContainer = sealed class(StackedHeap)
     
+    private tb: TextBlock;
+    //ToDo #2461
+    public property Description: string read tb=nil?nil:tb.Text write
+    begin
+      if (tb<>nil) and string.IsNullOrWhiteSpace(value) then exit;
+      if tb=nil then
+      begin
+        tb := new TextBlock;
+        self.Children.Add(tb);
+        tb.HorizontalAlignment  := System.Windows.HorizontalAlignment.Center;
+        tb.VerticalAlignment    := System.Windows.VerticalAlignment.Center;
+        tb.Margin := new Thickness(5,2,5,2);
+        tb.Text := value;
+      end else
+      if string.IsNullOrWhiteSpace(value) then
+      begin
+        self.Children.Remove(tb);
+        tb := nil;
+      end else
+        tb.Text := value;
+    end;
+    
     public constructor(c: Counter; descr: string);
     begin
       
@@ -29,16 +51,7 @@ type
           MessageBox.Show(e.ToString);
       end);
       
-      if not string.IsNullOrWhiteSpace(descr) then
-      begin
-        var tb := new TextBlock;
-        self.Children.Add(tb);
-        tb.HorizontalAlignment  := System.Windows.HorizontalAlignment.Center;
-        tb.VerticalAlignment    := System.Windows.VerticalAlignment.Center;
-        tb.Margin := new Thickness(5,2,5,2);
-        tb.Text := descr;
-      end;
-      
+      Description := descr;
     end;
     private constructor := raise new System.InvalidOperationException;
     
@@ -132,7 +145,7 @@ type
   LayerTestsContainer = sealed class(DisplayList<TestInfoContainer>)
     private show_err := false;
     
-    protected function ShouldRenderItem(item: TestInfoContainer): boolean; override := show_err or (item.test_sucessful=nil) or item.test_sucessful.Value;
+    protected function ShouldRenderItem(item: TestInfoContainer): boolean; override := show_err or (item.test_sucessful=nil) or item.test_sucessful.Value or item.ContainsSubItems;
     
     protected procedure HandleHeaderClick(e: System.Windows.Input.MouseButtonEventArgs); override;
     begin
@@ -186,14 +199,18 @@ type
         tests_cont.Margin := new Thickness(0,5,0,0);
         tests_cont.VerticalAlignment := System.Windows.VerticalAlignment.Top;
         
-        var cc := new CounterContainer(layer_counter, $'by {layer_counter.LayerRemoveCount}');
+        var cc := new CounterContainer(layer_counter, nil);
+        layer_counter.DisplayNameUpdated += ()->cc.Dispatcher.Invoke(()->
+        begin
+          cc.Description := layer_counter.DisplayName;
+        end);
 //        sp.Children.Add(cc);
         tests_cont.Header := cc;
         
         layer_counter.NewTestInfo += ti->cc.Dispatcher.Invoke(()->
         begin
           var tic := new TestInfoContainer(ti);
-          tests_cont.AddElement(tic);
+          tests_cont.AddElement(tic, tic.Anchor);
           tic.TestSucessfulChanged += ts->tests_cont.InvalidateMeasure();
         end);
         

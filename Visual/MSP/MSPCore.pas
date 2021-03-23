@@ -52,7 +52,12 @@ type
           end;
         end;
         
-        System.IO.Directory.Delete(curr_test_dir, true);
+        try
+          System.IO.Directory.Delete(curr_test_dir, true);
+        except
+          on e: Exception do
+            System.Windows.MessageBox.Show(e.ToString);
+        end;
       end);
       
       counter.ReportLineCount += line_count->self.ReportLineCount(line_count);

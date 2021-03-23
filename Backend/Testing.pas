@@ -199,6 +199,7 @@ type
         end;
       end;
       
+      // p.WaitForExit; //ToDo Всё равно .exe иногда не освобождает...
 //      lock output do
 //      begin
 //        Writeln(fname);

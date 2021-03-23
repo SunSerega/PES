@@ -68,10 +68,11 @@ type
     
     private items := new List<__DisplayListItem<T>>;
     private max_items_height := 0.0;
+    private last_item_pinned := false;
     public procedure AddItem(item: __DisplayListItem<T>);
     begin
       Dispatcher.VerifyAccess;
-      if should_render_item(item.el) and (displayed_items.Count <> 0) and (pinned_item_ind = displayed_items.Last) then
+      if last_item_pinned and should_render_item(item.el) then
       begin
         var prev_pinn := items[pinned_item_ind.Value];
         item.logical_y := prev_pinn.logical_y;
@@ -139,6 +140,8 @@ type
     private procedure ValidatePinn;
     begin
       if (pinned_item_ind <> nil) and should_render_item(items[pinned_item_ind.Value].el) then exit;
+      last_item_pinned := false;
+//      Writeln('Resetting pinn');
       pinned_item_ind := displayed_items.Cast&<integer?>.FirstOrDefault(ind->should_render_item(items[ind.Value].el));
       if pinned_item_ind <> nil then exit;
       pinned_item_ind := NextValidItemInd(-1);
@@ -189,7 +192,7 @@ type
       var upper_logical_bound := lower_logical_bound + pinned_item.DesiredSize.Height;
       var upper_visual_bound  := lower_visual_bound  + pinned_item.DesiredSize.Height;
       
-      var need_change_pinned := (lower_logical_bound < 0) or (upper_logical_bound > availableSize.Height);
+      var need_change_pinned := (lower_logical_bound < -0.01) or (upper_logical_bound > availableSize.Height+0.01);
       
       {$region lower}
       
@@ -269,21 +272,29 @@ type
       if lower_logical_bound > 0.01 then
       begin
         pinned_item_ind := displayed_items.First;
+        last_item_pinned := false;
         foreach var ind in displayed_items do
           items[ind].next_logical_y -= lower_logical_bound;
         lower_logical_bound := 0;
+//        Writeln('Set to low');
       end else
       if upper_logical_bound < availableSize.Height-0.01 then
       begin
         pinned_item_ind := displayed_items.Last;
+        last_item_pinned := true;
         var shift := Min( -lower_logical_bound, availableSize.Height - upper_logical_bound );
         foreach var ind in displayed_items do
           items[ind].next_logical_y += shift;
         lower_logical_bound += shift;
         upper_logical_bound += shift;
+//        Writeln('Set to high');
       end else
       if need_change_pinned then
+      begin
         pinned_item_ind := displayed_items[(displayed_items.Count-1) div 2];
+        last_item_pinned := false;
+//        Writeln('Set to middle');
+      end;
       
       foreach var ind in displayed_items do
         items[ind].ComfirmRealY;

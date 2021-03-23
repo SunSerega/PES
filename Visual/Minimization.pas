@@ -161,6 +161,7 @@ type
           i += 1;
         end;
         
+        Exec(last_source_dir);
         Dispatcher.Invoke(()->
         begin
           Application.Current.MainWindow.Title := $'PES: Done';
