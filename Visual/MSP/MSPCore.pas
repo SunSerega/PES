@@ -22,7 +22,7 @@ type
     end;
     private constructor := raise new System.InvalidOperationException;
     
-    protected function MakeMinimizable(dir: string): MinimizableList; abstract;
+    protected function MakeMinimizable(dir, target: string): MinimizableContainer; abstract;
     protected procedure OnCounterCreated(counter: MinimizationCounter); abstract;
     public function Execute(last_source_dir: string): string;
     begin
@@ -31,8 +31,8 @@ type
       var StagePartStarted := self.StagePartStarted;
       if StagePartStarted<>nil then StagePartStarted();
       
-      var minimizable := MakeMinimizable(last_source_dir);
-      minimizable.UnWrapTo( System.IO.Path.Combine(stage_part_dir, '0') );
+      var minimizable := MakeMinimizable(last_source_dir, expected_tr.SourceFName);
+      minimizable.UnWrapTo( System.IO.Path.Combine(stage_part_dir, '0'), nil );
       ReportLineCount(minimizable.CountLines(nil));
       
       var counter := new MinimizationCounter(minimizable, self.stage_part_dir, (curr_test_dir,ti)->

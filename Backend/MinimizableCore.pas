@@ -12,58 +12,68 @@ type
   
   MinimizableNode = abstract class
     
-    public function Enmr: sequence of MinimizableNode;
-    
     protected invulnerable: boolean;
-    public property IsInvulnerable: boolean read invulnerable; virtual;
+    //ToDo #2462
+    public property IsInvulnerable: boolean read boolean(invulnerable); virtual;
     
-    public function Cleanup(is_invalid: MinimizableNode->boolean): MinimizableNode; virtual :=
-    is_invalid(self) ? nil : self;
+    protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); abstract;
+    public function Cleanup(is_invalid: MinimizableNode->boolean): boolean;
+    begin
+      Result := is_invalid(self);
+      if Result then exit;
+      CleanupBody(is_invalid);
+    end;
     
-    public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); abstract;
-    
-    public function CountLines(need_node: MinimizableNode->boolean): integer; abstract;
+    public procedure AddDirectChildrenTo(l: List<MinimizableNode>); abstract;
+    public function GetAllVulnerableNodes: List<MinimizableNode>;
+    begin
+      Result := new List<MinimizableNode>;
+      
+      var prev := new List<MinimizableNode>;
+      prev += self;
+      
+      while prev.Count<>0 do
+      begin
+        var curr := new List<MinimizableNode>;
+        foreach var n in prev do
+          n.AddDirectChildrenTo(curr);
+        Result.AddRange(curr);
+        prev := curr;
+      end;
+      
+    end;
     
     public function ToString: string; override := $'Node[{self.GetType}]';
     
   end;
   
-  MinimizableItem = abstract class(MinimizableNode)
+  MinimizableNodeList<TNode> = sealed class
+  where TNode: MinimizableNode;
+    private nodes := new List<TNode>;
+    
+    public function EnmrDirect := nodes.AsEnumerable;
+    
+    protected invulnerable: boolean;
+    public property IsInvulnerable: boolean read invulnerable;
+    
+    public procedure Cleanup(is_invalid: MinimizableNode->boolean) :=
+    nodes.RemoveAll(n->n.Cleanup(is_invalid));
+    
+    public procedure Add(n: TNode);
+    begin
+      self.nodes += n;
+      //ToDo #????
+      if (n as MinimizableNode).IsInvulnerable then
+        self.invulnerable := true;
+    end;
+    public static procedure operator+=(l: MinimizableNodeList<TNode>; n: TNode) := l.Add(n);
     
   end;
   
-  MinimizableList = abstract class(MinimizableNode)
-    protected items := new List<MinimizableNode>;
+  MinimizableContainer = abstract class(MinimizableNode)
     
-    public function Cleanup(is_invalid: MinimizableNode->boolean): MinimizableNode; override;
-    begin
-      Result := nil;
-      if is_invalid(self) then exit;
-      Result := self;
-      for var i := 0 to items.Count-1 do
-        items[i] := items[i].Cleanup(is_invalid);
-      items.RemoveAll(item->item=nil);
-    end;
-    
-    public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean := nil); override :=
-    foreach var item in items do
-      if (need_node=nil) or need_node(item) then
-        item.UnWrapTo(new_base_dir, need_node);
-    
-    public function CountLines(need_node: MinimizableNode->boolean): integer; override;
-    begin
-      Result := 0;
-      foreach var item in items do
-        if (need_node=nil) or need_node(item) then
-          Result += item.CountLines(need_node);
-    end;
-    
-    public procedure Add(i: MinimizableNode);
-    begin
-      self.items += i;
-      if i.IsInvulnerable then
-        self.invulnerable := true;
-    end;
+    public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); abstract;
+    public function CountLines(need_node: MinimizableNode->boolean): integer; abstract;
     
   end;
   
@@ -223,7 +233,7 @@ type
   {$region Counter}
   
   InternalMinimizationContext = record
-    public n: MinimizableNode;
+    public nc: MinimizableContainer;
     public removable_left: List<MinimizableNode>;
     public start_layer: integer;
     public base_path: string;
@@ -250,9 +260,9 @@ type
     
     public function GetLayerForCount := (removable_left.Count div MaxThreadBatch).ClampBottom(1);
     
-    public constructor(n: MinimizableNode; removable_left: List<MinimizableNode>; base_path: string; exec_test: (string, TestInfo)->boolean);
+    public constructor(nc: MinimizableContainer; removable_left: List<MinimizableNode>; base_path: string; exec_test: (string, TestInfo)->boolean);
     begin
-      self.n := n;
+      self.nc := nc;
       self.removable_left := removable_left;
       self.start_layer := GetLayerForCount;
       self.base_path := base_path;
@@ -323,12 +333,12 @@ type
     private last_stable_dir: string := nil;
     public property LastStableDir: string read last_stable_dir;
     
-    public constructor(n: MinimizableNode; base_path: string; exec_test: (string, TestInfo)->boolean);
+    public constructor(nc: MinimizableContainer; base_path: string; exec_test: (string, TestInfo)->boolean);
     begin
-      var removable_left := n.Enmr.Where(n->not n.IsInvulnerable).ToList;
+      var removable_left := nc.GetAllVulnerableNodes;
       
       self.c := new InternalMinimizationContext(
-        n,
+        nc,
         removable_left,
         base_path,
         exec_test
@@ -345,27 +355,20 @@ implementation
 
 uses ThreadUtils;
 
-function MinimizableNode.Enmr: sequence of MinimizableNode;
+procedure operator+=<TNode>(l: List<MinimizableNode>; n: TNode); extensionmethod;
+where TNode: MinimizableNode;
 begin
-  yield self;
-  var prev := new List<MinimizableList>;
-  if self is MinimizableList(var l) then prev += l;
-  
-  while prev.Count<>0 do
-  begin
-    var curr := new List<MinimizableList>(prev.Count);
-    
-    foreach var l in prev do
-      foreach var i in l.items do
-      begin
-        yield i;
-        if i is MinimizableList(var sub_l) then
-          curr += sub_l;
-      end;
-    
-    prev := curr;
-  end;
-  
+  //ToDo #????
+  if (n as MinimizableNode).IsInvulnerable then exit;
+  l.Add( n );
+end;
+
+procedure operator+=<TNode>(l: List<MinimizableNode>; nl: MinimizableNodeList<TNode>); extensionmethod;
+where TNode: MinimizableNode;
+begin
+  l.Capacity := l.Capacity.ClampBottom(l.Count+nl.nodes.Count);
+  foreach var n in nl.nodes do
+    l += n;
 end;
 
 /// l=кол-во элементов которые убирают
@@ -588,7 +591,7 @@ begin
     var curr_test_dir := System.IO.Path.Combine(c.base_path, c.EnsureUniqueName('test'));
     
     var unwraped_c := 0;
-    c.n.UnWrapTo(curr_test_dir, n->
+    c.nc.UnWrapTo(curr_test_dir, n->
     begin
       Result := not ti.Removing.Contains(n);
       unwraped_c += integer( Result and not n.IsInvulnerable );
@@ -690,7 +693,7 @@ begin
         begin
           
           foreach var n in curr_removed.ToArray do
-            foreach var sub_n in n.Enmr do
+            foreach var sub_n in n.GetAllVulnerableNodes do
               curr_removed += sub_n;
           
           Result := curr_removed;
@@ -729,7 +732,7 @@ begin
           InvokeNewTestInfo( new CommentTestInfo('Abort: Too much of a result') );
         end;
         
-        self.ReportLineCount(c.n.CountLines(n->not all_remove_set.Contains(n)));
+        self.ReportLineCount(c.nc.CountLines(n->not all_remove_set.Contains(n)));
       end;
       
     end;
@@ -743,13 +746,13 @@ begin
   var t := new RemovalTree(new_removed);
   t.Combine(c.source_test_info, test_case_without, self.InvokeNewTestInfo);
   c.source_test_info := new StableTestInfo(t.AllNodes, c.source_test_info);
-  c.n.Cleanup(n->n in t.AllNodes);
-  self.ReportLineCount(c.n.CountLines(nil));
+  c.nc.Cleanup(n->n in t.AllNodes);
+  self.ReportLineCount(c.nc.CountLines(nil));
   c.removable_left.RemoveAll(n->n in t.AllNodes);
   self.ReportMinimizedCount(0);
   
   var stable_dir := System.IO.Path.Combine(c.base_path, c.EnsureUniqueName($'stable[{c.removable_left.Count}]'));
-  c.n.UnWrapTo(stable_dir, nil);
+  c.nc.UnWrapTo(stable_dir, nil);
   
   var StableDirCreated := self.StableDirCreated;
   if StableDirCreated<>nil then StableDirCreated(stable_dir);

@@ -1,4 +1,4 @@
-﻿unit MSPFolder;
+﻿unit MSPFileParser;
 
 uses System.Windows;
 uses System.Windows.Controls;
@@ -7,18 +7,18 @@ uses System.Windows.Media;
 uses VUtils           in '..\VUtils';
 
 uses MinimizableCore  in '..\..\Backend\MinimizableCore';
-uses MFolder          in '..\..\Backend\Minimizables\MFolder';
+uses MFileParser      in '..\..\Backend\Minimizables\MFileParser';
 
 uses MSPStandard;
 
 type
   
-  FolderMSP = sealed class(StandardMSP)
+  FileParserMSP = sealed class(StandardMSP)
     
     protected function MakeMinimizable(dir, target: string): MinimizableContainer; override :=
-    new MFolderContents(dir, target);
+    new MFileBatch(dir, target);
     
-    protected property Description: string read 'File removal'; override;
+    protected property Description: string read 'Line removal'; override;
     
   end;
   

@@ -1,4 +1,4 @@
-﻿unit MSPFile;
+﻿unit MSPFileLines;
 
 uses System.Windows;
 uses System.Windows.Controls;
@@ -7,16 +7,16 @@ uses System.Windows.Media;
 uses VUtils           in '..\VUtils';
 
 uses MinimizableCore  in '..\..\Backend\MinimizableCore';
-uses MFile            in '..\..\Backend\Minimizables\MFile';
+uses MFileLines       in '..\..\Backend\Minimizables\MFileLines';
 
 uses MSPStandard;
 
 type
   
-  FileMSP = sealed class(StandardMSP)
+  FileLinesMSP = sealed class(StandardMSP)
     
-    protected function MakeMinimizable(dir: string): MinimizableList; override :=
-    new MFileBatch(dir);
+    protected function MakeMinimizable(dir, target: string): MinimizableContainer; override :=
+    new MFileBatch(dir, target);
     
     protected property Description: string read 'Line removal'; override;
     
