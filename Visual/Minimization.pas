@@ -13,7 +13,6 @@ uses Common;
 uses MSPCore        in 'MSP\MSPCore';
 uses MSPFolder      in 'MSP\MSPFolder';
 uses MSPFileParser  in 'MSP\MSPFileParser';
-//uses MSPFileLines   in 'MSP\MSPFileLines';
 
 type
   
@@ -104,7 +103,6 @@ type
       
       Result := ApplyMSP(Result, new     FolderMSP(self.stage_dir, expected_tr));
       Result := ApplyMSP(Result, new FileParserMSP(self.stage_dir, expected_tr));
-//      Result := ApplyMSP(Result, new  FileLinesMSP(self.stage_dir, expected_tr));
       
     end;
     
