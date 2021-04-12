@@ -24,7 +24,7 @@ type
       CleanupBody(is_invalid);
     end;
     
-    public procedure AddDirectChildrenTo(l: List<MinimizableNode>); abstract;
+    protected procedure AddDirectChildrenTo(l: List<MinimizableNode>); abstract;
     public function GetAllVulnerableNodes: List<MinimizableNode>;
     begin
       Result := new List<MinimizableNode>;
@@ -32,16 +32,20 @@ type
       var prev := new List<MinimizableNode>;
       prev += self;
       
+      var curr := new List<MinimizableNode>;
       while prev.Count<>0 do
       begin
-        var curr := new List<MinimizableNode>;
         foreach var n in prev do
           n.AddDirectChildrenTo(curr);
         Result.AddRange(curr);
-        prev := curr;
+        Swap(prev, curr);
+        curr.Clear;
       end;
       
     end;
+    
+    public static function ApplyCleanup(item: MinimizableNode; is_invalid: MinimizableNode->boolean) := (item<>nil) and item.Cleanup(is_invalid);
+    public static function ApplyNeedNode(item: MinimizableNode; need_node: MinimizableNode->boolean) := (item<>nil) and ((need_node=nil) or need_node(item));
     
     public function ToString: string; override := $'Node[{self.GetType}]';
     
@@ -52,6 +56,7 @@ type
     private nodes := new List<TNode>;
     
     public function EnmrDirect := nodes.AsEnumerable;
+    public property IsEmpty: boolean read nodes.Count=0;
     
     protected invulnerable: boolean;
     public property IsInvulnerable: boolean read invulnerable;

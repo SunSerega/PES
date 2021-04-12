@@ -110,7 +110,10 @@ type
             var anim := new System.Windows.Media.Animation.DoubleAnimation(0, TestInfoContainer.status_w, new Duration(System.TimeSpan.FromSeconds(0.5)));
             status.BeginAnimation(FrameworkElement.WidthProperty, anim);
           end else
-            status.Width := TestInfoContainer.status_w; var ToDo := 0; //ToDo Всё равно иногда не появляется
+            status.Width := TestInfoContainer.status_w;
+            var ToDo := 0; //ToDo Всё равно иногда не появляется
+            // На самом деле возможно дело не в этом, а в том что инвалидация иногда принципиально пропускается
+            // Замечал такое в других случаях, пока не прокручу вниз - status и прогресс-бар Counter-ов не обновляется
         end);
       end;
       
@@ -195,6 +198,8 @@ type
         sr.Content := tests_cont;
         tests_cont.ItemsShift := 10;
         var ToDo := 0; //ToDo привязать и к изменению размера окна
+        // На самом деле лучше трансформировать свои координаты в координаты окна
+        // И сравнивать с границей экрана, чтоб ни один из дисплей листов не пытался показать что то вне экрана
         tests_cont.MaxItemsHeight := Application.Current.MainWindow.Height*0.8;
         tests_cont.Margin := new Thickness(0,5,0,0);
         tests_cont.VerticalAlignment := System.Windows.VerticalAlignment.Top;

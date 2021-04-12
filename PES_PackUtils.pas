@@ -22,6 +22,8 @@ function is_separate_execution := Logger.main is ConsoleLogger;
 function nfi := AOtp.nfi;
 function enc := AOtp.enc;
 
+function assembly_dir := PathUtils.assembly_dir;
+
 begin
   try
     while not FileExists('PES_PackUtils.pas') do
