@@ -17,6 +17,8 @@ type
     public property IsInvulnerable: boolean read boolean(invulnerable); virtual;
     
     protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); abstract;
+    protected procedure AddDirectChildrenTo(l: List<MinimizableNode>); abstract;
+    
     public function Cleanup(is_invalid: MinimizableNode->boolean): boolean;
     begin
       Result := is_invalid(self);
@@ -24,7 +26,6 @@ type
       CleanupBody(is_invalid);
     end;
     
-    protected procedure AddDirectChildrenTo(l: List<MinimizableNode>); abstract;
     public function GetAllVulnerableNodes: List<MinimizableNode>;
     begin
       Result := new List<MinimizableNode>;

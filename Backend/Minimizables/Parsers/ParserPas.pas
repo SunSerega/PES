@@ -4,6 +4,8 @@
 //ToDo Пройтись по всем ToDo
 
 //ToDo Предупреждения
+//ToDo Визуальная часть
+// - И удалить .ToString-и отдельным коммитом, когда будет визуал
 //ToDo Проверка UnWrap-а при запуске с дебагом
 
 interface
@@ -24,379 +26,19 @@ type
     
     public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); override;
     public function CountLines(need_node: MinimizableNode->boolean): integer; override;
-     
+    
+    protected procedure FillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); override;
+    protected procedure FillBodyPointAreasList(ind: StringIndex; l: List<PointAreasList>); override;
+    
   end;
   
 implementation
 
 type
   
-  {$region Utils}
-  
-  StringIndex = record
-    private val: integer;
-    
-    private static function MakeInvalid: StringIndex;
-    begin
-      Result.val := -1; // Note UnsafeInc
-    end;
-    public static property Invalid: StringIndex read MakeInvalid;
-    public property IsInvalid: boolean read val=-1;
-    
-    public static function operator implicit(ind: integer): StringIndex;
-    begin
-      if ind<0 then raise new System.IndexOutOfRangeException($'Index was {ind}');
-      Result.val := ind;
-    end;
-    public static function operator implicit(ind: StringIndex): integer := ind.val;
-    
-    public static function operator=(ind1, ind2: StringIndex) := ind1.val=ind2.val;
-    public static function operator=(ind1: StringIndex; ind2: integer) :=
-    (ind1.val=ind2) and not ind1.IsInvalid;
-    public static function operator=(ind1: integer; ind2: StringIndex) :=
-    (ind1=ind2.val) and not ind2.IsInvalid;
-    
-    public static function operator<(ind1, ind2: StringIndex): boolean;
-    begin
-      if ind1.IsInvalid then raise new System.ArgumentOutOfRangeException('ind1');
-      if ind2.IsInvalid then raise new System.ArgumentOutOfRangeException('ind2');
-      Result := ind1.val < ind2.val;
-    end;
-    public static function operator>(ind1, ind2: StringIndex): boolean;
-    begin
-      if ind1.IsInvalid then raise new System.ArgumentOutOfRangeException('ind1');
-      if ind2.IsInvalid then raise new System.ArgumentOutOfRangeException('ind2');
-      Result := ind1.val > ind2.val;
-    end;
-    public static function operator<=(ind1, ind2: StringIndex) := not (ind1>ind2);
-    public static function operator>=(ind1, ind2: StringIndex) := not (ind1<ind2);
-    
-    public static function operator+(ind: StringIndex; shift: integer): StringIndex;
-    begin
-      if ind.IsInvalid then raise new System.ArgumentOutOfRangeException;
-      Result := ind.val + shift;
-    end;
-    public static function operator-(ind: StringIndex; shift: integer): StringIndex;
-    begin
-      if ind.IsInvalid then raise new System.ArgumentOutOfRangeException;
-      Result := ind.val - shift;
-    end;
-    public function UnsafeInc: StringIndex;
-    begin
-      // No .IsInvalid check: Invalid+1=0
-      Result.val := self.val+1;
-    end;
-    
-    public static procedure operator+=(var ind: StringIndex; shift: integer) := ind := ind + shift;
-    public static procedure operator-=(var ind: StringIndex; shift: integer) := ind := ind - shift;
-    
-    public static function operator-(ind1, ind2: StringIndex): integer;
-    begin
-      if ind1.IsInvalid then raise new System.ArgumentOutOfRangeException('ind1');
-      if ind2.IsInvalid then raise new System.ArgumentOutOfRangeException('ind2');
-      Result := ind1.val - ind2.val;
-    end;
-    
-    public function ToString: string; override :=
-    if self.IsInvalid then 'Invalid' else self.val.ToString;
-    public function Print: StringIndex;
-    begin
-      self.ToString.Print;
-      Result := self;
-    end;
-    public function Println: StringIndex;
-    begin
-      self.ToString.Println;
-      Result := self;
-    end;
-    
-  end;
-  
-  TextSection = record
-    private text: string := nil;
-    private i1, i2: StringIndex; // [i1,i2)
-    
-    public property Length: integer read i2 - i1;
-    
-    public static property Invalid: TextSection read default(TextSection);
-    public property IsInvalid: boolean read text=nil;
-    
-    public constructor(text: string; i1, i2: StringIndex);
-    begin
-      if i1>i2 then raise new System.InvalidOperationException($'TextSection cannot have range {i1}..{i2}');
-      self.text := text;
-      self.i1 := i1;
-      self.i2 := i2;
-    end;
-    public constructor(text: string) := Create(text, 0, text.Length);
-    
-    public procedure ValidateIndex(ind: StringIndex) :=
-    if (ind >= StringIndex(Length)) then raise new System.IndexOutOfRangeException($'Index {ind} was > {Length}');
-    
-    private function GetItemAt(ind: StringIndex): char;
-    begin
-      ValidateIndex(ind);
-      Result := text[self.i1+ind];
-    end;
-    public property Item[ind: StringIndex]: char read GetItemAt write
-    begin
-      ValidateIndex(ind);
-      text[self.i1+ind] := value;
-    end; default;
-    public function Last := text[i2-1];
-    
-    public function WithI1(i1: StringIndex) := new TextSection(text, i1, i2);
-    public function WithI2(i2: StringIndex) := new TextSection(text, i1, i2);
-    
-    public function TrimStart(chars: string): TextSection;
-    begin
-      Result := self;
-      while (Result.Length<>0) and (Result[0] in chars) do
-        Result.i1 += 1;
-    end;
-    public function TrimEnd(chars: string): TextSection;
-    begin
-      Result := self;
-      while (Result.Length<>0) and (Result.Last in chars) do
-        Result.i2 -= 1;
-    end;
-    public function Trim(chars: string) := self.TrimStart(chars).TrimEnd(chars);
-    
-    public function TrimStart(i1_shift: StringIndex) := new TextSection(self.text, self.i1+i1_shift, self.i2);
-    public function TrimEnd  (i2_shift: StringIndex) := new TextSection(self.text, self.i1, self.i2-i2_shift);
-    
-    public function TakeFirst(len: StringIndex): TextSection;
-    begin
-      ValidateIndex(len);
-      Result := new TextSection(self.text, self.i1, self.i1+len);
-    end;
-    public function TakeLast(len: StringIndex): TextSection;
-    begin
-      ValidateIndex(len);
-      Result := new TextSection(self.text, self.i2-len, self.i2);
-    end;
-    
-    public function TrimAfterFirst(ch: char): TextSection;
-    begin
-      var ind := self.IndexOf(ch);
-      Result := if ind.IsInvalid then
-        TextSection.Invalid else
-        new TextSection(self.text, self.i1, self.i1+ind+1);
-    end;
-    public function TrimAfterFirst(str: string): TextSection;
-    begin
-      var ind := self.IndexOf(str);
-      Result := if ind.IsInvalid then
-        TextSection.Invalid else
-        new TextSection(self.text, self.i1, self.i1+ind+str.Length);
-    end;
-    
-    public function SubSection(ind1, ind2: StringIndex): TextSection;
-    begin
-      ValidateIndex(ind2-1);
-      Result := new TextSection(self.text, self.i1+ind1, self.i1+ind2);
-    end;
-    
-    public function IsWhiteSpace: boolean;
-    begin
-      Result := true;
-      for var i: integer := i1 to i2-1 do
-      begin
-        Result := char.IsWhiteSpace( text[i] );
-        if not Result then break;
-      end;
-    end;
-    public function CountOf(ch: char): integer;
-    begin
-      for var i: integer := i1 to i2-1 do
-        Result += integer( text[i].ToUpper = ch.ToUpper );
-    end;
-    
-    public static function operator=(text1, text2: TextSection): boolean;
-    begin
-      Result := false;
-      if text1.Length <> text2.Length then exit;
-      for var i := 0 to text1.Length-1 do
-        if text1[i]<>text2[i] then exit;
-      Result := true;
-    end;
-    public static function operator=(text: TextSection; str: string): boolean;
-    begin
-      Result := false;
-      if str=nil then raise new System.ArgumentNullException;
-      if text.IsInvalid then exit;
-      if text.Length<>str.Length then exit;
-      for var i := 0 to str.Length-1 do
-        if text[i]<>str[i] then exit;
-      Result := true;
-    end;
-    public static function operator=(str: string; text: TextSection): boolean := text=str;
-    
-    public function StartsWith(str: string): boolean;
-    begin
-      Result := false;
-      for var i := 0 to str.Length-1 do
-        if str[i].ToUpper <> self[i].ToUpper then
-          exit;
-      Result := true;
-    end;
-    
-    public function IndexOf(ch: char): StringIndex;
-    begin
-      ch := ch.ToUpper;
-      for var i: integer := self.i1 to self.i2-1 do
-        if text[i].ToUpper = ch then
-        begin
-          Result := i - integer(self.i1);
-          exit;
-        end;
-      Result := StringIndex.Invalid;
-    end;
-    public function IndexOf(from: StringIndex; ch: char): StringIndex;
-    begin
-      Result := self.TrimStart(from).IndexOf(ch);
-      if Result.IsInvalid then exit;
-      Result += from;
-    end;
-    public function IndexOf(ch_validator: char->boolean): StringIndex;
-    begin
-      for var i: integer := self.i1 to self.i2-1 do
-        if ch_validator(text[i]) then
-        begin
-          Result := i - integer(self.i1);
-          exit;
-        end;
-      Result := StringIndex.Invalid;
-    end;
-    
-    private static KMP_Cache := new Dictionary<string, array of StringIndex>;
-    public function KMP_GetHeader(str: string): array of StringIndex;
-    begin
-      if KMP_Cache.TryGetValue(str, Result) then exit;
-      
-      Result := new StringIndex[str.Length];
-      var curr_ind := StringIndex.Invalid;
-      Result[0] := curr_ind;
-      for var i := 1 to str.Length-1 do
-      begin
-        while true do
-        begin
-          var next_ind := curr_ind.UnsafeInc;
-          if str[i] = str[next_ind] then
-            curr_ind := next_ind else
-          if not curr_ind.IsInvalid then
-          begin
-            curr_ind := Result[curr_ind];
-            continue;
-          end;
-          break;
-        end;
-        Result[i] := curr_ind;
-      end;
-      
-      KMP_Cache[str] := Result;
-    end;
-    
-    public function IndexOf(str: string): StringIndex;
-    begin
-      if str.Length=0 then raise new System.ArgumentException;
-      str := str.ToUpper;
-      var header := KMP_GetHeader(str);
-      var curr_ind := StringIndex.Invalid;
-      
-      for var i: integer := self.i1 to self.i2-str.Length do
-        while true do
-        begin
-          var next_ind := curr_ind.UnsafeInc;
-          if text[i].ToUpper = str[next_ind] then
-          begin
-            curr_ind := next_ind;
-            if curr_ind = str.Length-1 then
-            begin
-              Result := i-integer(self.i1)-str.Length+1;
-              exit;
-            end;
-          end else
-          if not curr_ind.IsInvalid then
-          begin
-            curr_ind := header[curr_ind];
-            continue;
-          end;
-          break;
-        end;
-      
-      Result := StringIndex.Invalid;
-    end;
-    public function IndexOf(from: StringIndex; str: string): StringIndex;
-    begin
-      Result := self.TrimStart(from).IndexOf(str);
-      if Result.IsInvalid then exit;
-      Result += from;
-    end;
-    
-    public function SubSectionOfFirst(params strs: array of string): TextSection;
-    begin
-      var min_str_len := strs.Min(str->str.Length);
-      if min_str_len=0 then raise new System.ArgumentException(strs.JoinToString(#10));
-      strs.Transform(str->str.ToUpper);
-      var headers := strs.ConvertAll(KMP_GetHeader);
-      var curr_inds := ArrFill(strs.Length, StringIndex.Invalid);
-      
-      for var text_i: integer := self.i1 to self.i2-min_str_len do
-      begin
-        var text_ch := text[text_i].ToUpper;
-        for var str_i := 0 to strs.Length-1 do
-        begin
-          var str := strs[str_i];
-          var header := headers[str_i];
-          var curr_ind := curr_inds[str_i];
-          
-          while true do
-          begin
-            var next_ind := curr_ind.UnsafeInc;
-            if text_ch = str[next_ind] then
-            begin
-              curr_ind := next_ind;
-              if curr_ind = str.Length-1 then
-              begin
-                var ind_end := text_i+1;
-                Result := new TextSection(self.text, ind_end-str.Length, ind_end);
-                exit;
-              end;
-            end else
-            if not curr_ind.IsInvalid then
-            begin
-              curr_ind := header[curr_ind];
-              continue;
-            end;
-            break;
-          end;
-          
-          curr_inds[str_i] := curr_ind;
-        end;
-      end;
-      
-      Result := TextSection.Invalid;
-    end;
-    
-    public function ToString: string; override :=
-    if self.IsInvalid then 'Invalid' else text.Substring(i1,i2-i1);
-    
-  end;
-  
-  {$endregion Utils}
-  
   {$region Text}
   
-  JTextBlockPart = abstract class(ParsedFileItem)
-    
-    protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); override := exit;
-    protected procedure AddDirectChildrenTo(l: List<MinimizableNode>); override := exit;
-    
-  end;
-  
-  MiscTextBlock = sealed class(JTextBlockPart)
-    private text: TextSection;
+  MiscTextBlock = sealed class(ParsedFileItem)
     private text_type: string;
     
     public const  MiscText = 'MiscText';
@@ -405,13 +47,12 @@ type
     
     public constructor(text: TextSection; f: ParsedPasFile; text_type: string);
     begin
-      inherited Create(f);
+      inherited Create(f, text);
       if text.Length=0 then raise new System.InvalidOperationException;
-      self.text := text;
       self.text_type := text_type;
       
       case text_type of
-         MiscText: if not text.IsWhiteSpace then ; //ToDo предупреждение
+         MiscText: if not original_section.IsWhiteSpace then ; //ToDo предупреждение
           Comment: ;
         Directive: ;
         else raise new System.InvalidOperationException(text_type);
@@ -433,31 +74,48 @@ type
       Result := new MiscTextBlock(text.TakeLast(ind), f, MiscTextBlock.MiscText);
     end;
     
-    public procedure UnWrapTo(sw: System.IO.StreamWriter; need_node: MinimizableNode->boolean); override := sw.Write( text.ToString );
-    public function CountLines(need_node: MinimizableNode->boolean): integer; override := text.CountOf(#10);
+    protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); override := exit;
+    protected procedure AddDirectChildrenTo(l: List<MinimizableNode>); override := exit;
+    
+    public procedure UnWrapTo(sw: System.IO.StreamWriter; need_node: MinimizableNode->boolean); override := sw.Write( original_section.ToString );
+    public function CountLines(need_node: MinimizableNode->boolean): integer; override := original_section.CountOf(#10);
+    
+    protected procedure FillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); override := exit;
+    protected procedure FillBodyPointAreasList(ind: StringIndex; l: List<PointAreasList>); override := exit;
     
     public function ToString: string; override :=
-    $'{self.f}:{text_type} >>>{text}<<<';
+    $'{self.f}:{text_type} >>>{original_section}<<<';
     
   end;
-  MissingTextBlock = sealed class(JTextBlockPart)
+  MissingTextBlock = sealed class(MinimizableNode)
+    private missing_ind: StringIndex;
     private descr: string;
     
-    public constructor(descr: string; f: ParsedPasFile);
+    public constructor(missing_ind: StringIndex; descr: string);
     begin
-      inherited Create(f);
+      self.missing_ind := missing_ind;
       self.descr := descr;
     end;
     
-    public procedure UnWrapTo(sw: System.IO.StreamWriter; need_node: MinimizableNode->boolean); override := exit;
-    public function CountLines(need_node: MinimizableNode->boolean): integer; override := 0;
+    protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); override := exit;
+    protected procedure AddDirectChildrenTo(l: List<MinimizableNode>); override := exit;
     
-    public function ToString: string; override := $'{self.f} ~~~ Missing[{descr}]<<<';
+    protected procedure FillChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>) :=
+    if not need_node(self) then added += new AddedText(missing_ind, descr);
+    protected function FillPointAreasList(ind: StringIndex; var l: PointAreasList): boolean;
+    begin
+      Result := ind = missing_ind;
+      if not Result then exit;
+      //ToDo Вообще плохо что nil... В идеале вообще удалить поле text из TextSection и передавать строку параметром, а то куча лишнего делается
+      l := new PointAreasList(new TextSection(nil, missing_ind, missing_ind));
+    end;
+    
+    public function ToString: string; override := $'~~~ Missing[{descr}]<<<';
     
   end;
   
   JTextBlock = sealed class(ParsedFileItem)
-    private parts := new MinimizableNodeList<JTextBlockPart>;
+    private parts := new MinimizableNodeList<MiscTextBlock>;
     private static comment_end_dict := new Dictionary<string, string>;
     private const not_really_comment_start = '{$';
     private const literal_string_start: string = '''';
@@ -469,13 +127,13 @@ type
         .ToDictionary(w->w[0], w->w[1]);
     end;
     
-    public constructor(_text: TextSection; f: ParsedPasFile; stoppers: sequence of string; stopper_validator: (string, TextSection, TextSection)->TextSection; var found_stopper_kw: string; var found_stopper_section: TextSection);
+    public constructor(text: TextSection; f: ParsedPasFile; stoppers: sequence of string; stopper_validator: (string, TextSection, TextSection)->TextSection; var found_stopper_kw: string; var found_stopper_section: TextSection);
     begin
-      inherited Create(f);
+      inherited Create(f, text);
       var expected_sub_strs := (stoppers + comment_end_dict.Keys + |literal_string_start|).ToArray;
       
-      var used_head := _text;
-      var read_head := _text;
+      var used_head := text;
+      var read_head := text;
       while true do
       begin
         var sub_section := read_head.SubSectionOfFirst(expected_sub_strs);
@@ -507,7 +165,7 @@ type
         var is_directive := false;
         if is_comment then
         begin
-          sub_section := sub_section.WithI2(_text.i2).TrimAfterFirst(
+          sub_section := sub_section.WithI2(read_head.i2).TrimAfterFirst(
             comment_end_dict[kw]
           );
           //ToDo Может стоит лучше обрабатывать, если конец коммента не удалось найти
@@ -579,65 +237,6 @@ type
       
     end;
     
-    //ToDo Убрать
-//    public constructor(text: TextSection; f: ParsedPasFile; stoppers: sequence of string; stopper_validator: TextSection->TextSection; var found_stopper: TextSection);
-//    begin
-//      inherited Create(f);
-//      var expected_sub_strs := (stoppers + comment_end_dict.Keys).ToArray;
-//      
-//      while true do
-//      begin
-//        var sub_section := text.SubSectionOfFirst(expected_sub_strs);
-//        var sub_string := if sub_section.IsInvalid then nil else sub_section.ToString;
-//        
-//        if (sub_string<>nil) and not comment_end_dict.ContainsKey(sub_string) then
-//        begin
-//          //ToDo Всё не так - надо бы переписать вообще...
-//          // - Когда валидатор не сработал - следующий поиск должен начаться после sub_section
-//          // - Но при этом text_before должен начинаться с конца применённого текста
-//          sub_section := stopper_validator(sub_section);
-//          sub_string := if sub_section.IsInvalid then nil else sub_section.ToString;
-//        end;
-//        
-//        var text_before := text;
-//        if not sub_section.IsInvalid then
-//          text_before.i2 := sub_section.i1;
-//        if text_before.Length<>0 then
-//          self.parts += new MiscTextBlock(text_before, f, false) as JTextBlockPart;
-//        
-//        // Nothing found
-//        if sub_string=nil then
-//        begin
-//          found_stopper := TextSection.Invalid;
-//          break;
-//        end else
-//        
-//        // Found comment: Add comment text and then text.Trim
-//        if comment_end_dict.ContainsKey(sub_string) then
-//        begin
-//          sub_section.i2 := text.i2;
-//          sub_section := sub_section.TrimEndAfter(
-//            comment_end_dict[sub_string]
-//          );
-//          
-//          if sub_section.IsInvalid then raise new System.InvalidOperationException(text.ToString);
-//          if not sub_section.StartsWith('{$') then // Не очень красиво - но надо для директив
-//            while (sub_section.i2<text.i2) and char.IsWhiteSpace(text.text[sub_section.i2]) do sub_section.i2 += 1;
-//          
-//          self.parts += new MiscTextBlock(sub_section, f, true) as JTextBlockPart;
-//          text.i1 := sub_section.i2;
-//        end else
-//        
-//        // Found stopper: return it
-//        begin
-//          found_stopper := sub_section;
-//          break;
-//        end;
-//        
-//      end;
-//      
-//    end;
-    
     protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); override := parts.Cleanup(is_invalid);
     protected procedure AddDirectChildrenTo(l: List<MinimizableNode>); override := l += parts;
     
@@ -651,6 +250,16 @@ type
       foreach var part in parts.EnmrDirect do
         if (need_node=nil) or need_node(part) then
           Result += part.CountLines(need_node);
+    end;
+    
+    protected procedure FillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); override :=
+    foreach var part in parts.EnmrDirect do part.FillChangedSections(need_node, deleted, added);
+    protected procedure FillBodyPointAreasList(ind: StringIndex; l: List<PointAreasList>); override :=
+    foreach var part in parts.EnmrDirect do
+    begin
+      var sub_l := default(PointAreasList);
+      if part.FillPointAreasList(ind, sub_l) then
+        l += sub_l;
     end;
     
     public function ToString: string; override;
@@ -677,11 +286,11 @@ type
     public property IsMissing: boolean read missing_space<>nil;
     public property IsEmpty: boolean read (missing_space=nil) and (extra_space=nil);
     
-    private constructor(text: TextSection; f: ParsedPasFile);
+    private constructor(text: TextSection; f: ParsedPasFile; missing_descr: string := 'Whitespace');
     begin
       
       if text.Length=0 then
-        missing_space := new MissingTextBlock('WhiteSpace', f) else
+        missing_space := new MissingTextBlock(text.i1, missing_descr) else
       if text.Length>1 then
         extra_space := new MiscTextBlock(text, f, MiscTextBlock.MiscText) else
         final_space := text[0];
@@ -707,7 +316,7 @@ type
         missing_space := nil else
       if MinimizableNode.ApplyCleanup(extra_space, is_invalid) then
       begin
-        final_space := extra_space.text[0];
+        final_space := extra_space.original_section[0];
         extra_space := nil;
       end;
     end;
@@ -720,7 +329,7 @@ type
     public procedure UnWrapTo(sw: System.IO.StreamWriter; need_node: MinimizableNode->boolean);
     begin
       if MinimizableNode.ApplyNeedNode(extra_space, need_node) then
-        sw.Write( extra_space.text.ToString ) else
+        sw.Write( extra_space.original_section.ToString ) else
       if MinimizableNode.ApplyNeedNode(missing_space, need_node) then
         {Write missing space aka nothing} else
         sw.Write( final_space );
@@ -730,11 +339,20 @@ type
     if MinimizableNode.ApplyNeedNode(missing_space, need_node) then 0 else
       integer( final_space=#10 );
     
+    protected procedure FillChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>);
+    begin
+      if missing_space<>nil then missing_space.FillChangedSections(need_node, deleted, added);
+      if extra_space<>nil   then extra_space  .FillChangedSections(need_node, deleted, added);
+    end;
+    protected function FillPointAreasList(ind: StringIndex; var l: PointAreasList) :=
+    missing_space.FillPointAreasList(ind, l) or
+    extra_space.FillPointAreasList(ind, l);
+    
     public function ToString: string; override :=
     if missing_space<>nil then
       'Missing' else
     if extra_space<>nil then
-      'Extra:'+extra_space.text.ToString else
+      'Extra:'+extra_space.original_section.ToString else
       'Perfect:#'+integer( final_space );
     
   end;
@@ -745,11 +363,13 @@ type
   
   CommonParsedItem = abstract class(ParsedFileItem)
     protected pretext: JTextBlock;
+    protected original_section: TextSection;
     
-    public constructor(pretext: JTextBlock; f: ParsedPasFile);
+    public constructor(pretext: JTextBlock; original_section: TextSection; f: ParsedPasFile);
     begin
-      inherited Create(f);
+      inherited Create(f, original_section.WithI1(pretext.original_section.i1));
       self.pretext := pretext;
+      self.original_section := original_section;
     end;
     private constructor := raise new System.InvalidOperationException;
     
@@ -758,6 +378,9 @@ type
     
     public procedure CommonUnWrapTo(sw: System.IO.StreamWriter; need_node: MinimizableNode->boolean); abstract;
     public function CommonCountLines(need_node: MinimizableNode->boolean): integer; abstract;
+    
+    protected procedure CommonFillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); abstract;
+    protected procedure CommonFillBodyPointAreasList(ind: StringIndex; l: List<PointAreasList>); abstract;
     
     protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); override;
     begin
@@ -785,15 +408,34 @@ type
       Result += CommonCountLines(need_node);
     end;
     
+    protected procedure FillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); override;
+    begin
+      if pretext<>nil then pretext.FillChangedSections(need_node, deleted, added);
+      CommonFillBodyChangedSections(need_node, deleted, added);
+    end;
+    protected procedure FillBodyPointAreasList(ind: StringIndex; l: List<PointAreasList>); override;
+    begin
+      var sub_l := default(PointAreasList);
+      if (pretext<>nil) and pretext.FillPointAreasList(ind, sub_l) then
+        l += sub_l else
+        CommonFillBodyPointAreasList(ind, l);
+    end;
+    
   end;
   
   EmptyCommonParsedItem = sealed class(CommonParsedItem)
+    
+    public constructor(pretext: JTextBlock; f: ParsedPasFile) :=
+    inherited Create(pretext, pretext.original_section.TakeLast(0), f);
     
     protected procedure CommonCleanupBody(is_invalid: MinimizableNode->boolean); override := exit;
     protected procedure CommonAddDirectChildrenTo(l: List<MinimizableNode>); override := exit;
     
     public procedure CommonUnWrapTo(sw: System.IO.StreamWriter; need_node: MinimizableNode->boolean); override := exit;
     public function CommonCountLines(need_node: MinimizableNode->boolean): integer; override := 0;
+    
+    protected procedure CommonFillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); override := exit;
+    protected procedure CommonFillBodyPointAreasList(ind: StringIndex; l: List<PointAreasList>); override := exit;
     
     public function ToString: string; override := pretext.ToString;
     
@@ -859,7 +501,7 @@ type
     private kw, body: TextSection;
     public constructor(pretext: JTextBlock; text: TextSection; f: ParsedPasFile);
     begin
-      inherited Create(pretext, f);
+      inherited Create(pretext, text, f);
       
       var ind := text.IndexOf(' ');
       if ind.IsInvalid then
@@ -935,6 +577,9 @@ type
       Result := res.ToString;
     end;
     
+    protected procedure CommonFillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); override := exit;
+    protected procedure CommonFillBodyPointAreasList(ind: StringIndex; l: List<PointAreasList>); override := exit;
+    
   end;
   
   PFUsedUnit = sealed class(ParsedFileItem)
@@ -949,7 +594,7 @@ type
     
     public constructor(text: TextSection; f: ParsedPasFile);
     begin
-      inherited Create(f);
+      inherited Create(f, text);
       
       self.space1 := SpacingBlock.ReadStart(text, f);
       self.space4 := MiscTextBlock.ReadEndSpaces(text, f);
@@ -1020,6 +665,22 @@ type
         Result += space4.CountLines(need_node);
     end;
     
+    protected procedure FillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); override;
+    begin
+      if space1<>nil then space1.FillChangedSections(need_node, deleted, added);
+      if space2<>nil then space2.FillChangedSections(need_node, deleted, added);
+      if space3<>nil then space3.FillChangedSections(need_node, deleted, added);
+      if space4<>nil then space4.FillChangedSections(need_node, deleted, added);
+    end;
+    protected procedure FillBodyPointAreasList(ind: StringIndex; l: List<PointAreasList>); override;
+    begin
+      var sub_l := default(PointAreasList);
+      if (space1<>nil) and space1.FillPointAreasList(ind, sub_l) then l+=sub_l else
+      if (space2<>nil) and space2.FillPointAreasList(ind, sub_l) then l+=sub_l else
+      if (space3<>nil) and space3.FillPointAreasList(ind, sub_l) then l+=sub_l else
+      if (space4<>nil) and space4.FillPointAreasList(ind, sub_l) then l+=sub_l else
+    end;
+    
     public function ToString: string; override;
     begin
       var res := new StringBuilder;
@@ -1058,7 +719,7 @@ type
       if space4<>nil then
       begin
         res += ' [';
-        res += space4.text.ToString;
+        res += space4.original_section.ToString;
         res += ']';
       end;
       
@@ -1071,7 +732,7 @@ type
     private used_units := new MinimizableNodeList<PFUsedUnit>;
     public constructor(pretext: JTextBlock; text: TextSection; f: ParsedPasFile);
     begin
-      inherited Create(pretext, f);
+      inherited Create(pretext, text, f);
       text := text
         .TrimStart( text.IndexOf(' ') ) // 1 space left, same as after each ","
         .TrimEnd(';')
@@ -1124,6 +785,19 @@ type
           Result += uu.CountLines(need_node);
     end;
     
+    protected procedure CommonFillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); override :=
+    foreach var uu in used_units.EnmrDirect do uu.FillChangedSections(need_node, deleted, added);
+    protected procedure CommonFillBodyPointAreasList(ind: StringIndex; l: List<PointAreasList>); override :=
+    foreach var uu in used_units.EnmrDirect do
+    begin
+      var sub_l := default(PointAreasList);
+      if uu.FillPointAreasList(ind, sub_l) then
+      begin
+        l += sub_l;
+        break;
+      end;
+    end;
+    
     public function ToString: string; override;
     begin
       var res := new StringBuilder;
@@ -1158,15 +832,10 @@ type
 constructor ParsedPasFile.Create(fname, base_dir, target: string);
 begin
   inherited Create(fname, base_dir, target);
-  var text := new TextSection( ReadAllText(fname).Replace(#13#10,#10).Replace(#13,#10) );
+  var text := new TextSection( self.original_text );
   
   var last_jtb := whole_file_mrcd.ReadSection(text, self, self.body.Add);
   if last_jtb<>nil then self.body.Add( new EmptyCommonParsedItem(last_jtb, self) );
-  
-  foreach var cpi in body.EnmrDirect do
-  begin
-    Writeln(cpi);
-  end;
   
 end;
 
@@ -1182,7 +851,8 @@ begin
   
   try
     foreach var cpi in body.EnmrDirect do
-      cpi.UnWrapTo(sw, need_node);
+      if ApplyNeedNode(cpi, need_node) then
+        cpi.UnWrapTo(sw, need_node);
   finally
     sw.Close;
   end;
@@ -1194,8 +864,23 @@ begin
   Result := 1;
   
   foreach var cpi in body.EnmrDirect do
-    Result += cpi.CountLines(need_node);
+    if ApplyNeedNode(cpi, need_node) then
+      Result += cpi.CountLines(need_node);
   
+end;
+
+procedure ParsedPasFile.FillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>) :=
+foreach var cpi in body.EnmrDirect do cpi.FillChangedSections(need_node, deleted, added);
+
+procedure ParsedPasFile.FillBodyPointAreasList(ind: StringIndex; l: List<PointAreasList>) :=
+foreach var cpi in body.EnmrDirect do
+begin
+  var sub_l := default(PointAreasList);
+  if cpi.FillPointAreasList(ind, sub_l) then
+  begin
+    l += sub_l;
+    break; // Не обязательно, но в .pas файлах (пока) нет пересекающихся областей
+  end;
 end;
 
 {$endregion ParsedPasFile}
