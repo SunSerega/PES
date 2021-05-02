@@ -8,6 +8,7 @@ uses MConst;
 uses ParserCore       in 'Parsers\ParserCore';
 
 type
+  ParsedFile = ParserCore.ParsedFile;
   
   MFilePetrified = sealed class(MinimizableNode)
     private rel_fname, org_fname: string;
@@ -87,6 +88,11 @@ type
         if (need_node=nil) or need_node(f) then
           Result += f.CountLines(need_node);
       
+    end;
+    
+    public procedure ForEachParsed(p: ParsedFile->());
+    begin
+      foreach var f in parsed.EnmrDirect do p(f);
     end;
     
   end;

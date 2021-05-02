@@ -10,8 +10,6 @@
 
 interface
 
-uses MConst           in '..\MConst';
-
 uses MinimizableCore  in '..\..\MinimizableCore';
 uses ParserCore;
 
@@ -24,7 +22,7 @@ type
     protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); override;
     protected procedure AddDirectChildrenTo(l: List<MinimizableNode>); override;
     
-    public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); override;
+    public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
     public function CountLines(need_node: MinimizableNode->boolean): integer; override;
     
     protected procedure FillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); override;
@@ -77,7 +75,7 @@ type
     protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); override := exit;
     protected procedure AddDirectChildrenTo(l: List<MinimizableNode>); override := exit;
     
-    public procedure UnWrapTo(sw: System.IO.StreamWriter; need_node: MinimizableNode->boolean); override := sw.Write( original_section.ToString );
+    public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override := tw.Write( original_section.ToString );
     public function CountLines(need_node: MinimizableNode->boolean): integer; override := original_section.CountOf(#10);
     
     protected procedure FillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); override := exit;
@@ -240,10 +238,10 @@ type
     protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); override := parts.Cleanup(is_invalid);
     protected procedure AddDirectChildrenTo(l: List<MinimizableNode>); override := l += parts;
     
-    public procedure UnWrapTo(sw: System.IO.StreamWriter; need_node: MinimizableNode->boolean); override :=
+    public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override :=
     foreach var part in parts.EnmrDirect do
       if (need_node=nil) or need_node(part) then
-        part.UnWrapTo(sw, need_node);
+        part.UnWrapTo(tw, need_node);
     public function CountLines(need_node: MinimizableNode->boolean): integer; override;
     begin
       Result := 0;
@@ -326,13 +324,13 @@ type
       if   extra_space<>nil then l +=   extra_space;
     end;
     
-    public procedure UnWrapTo(sw: System.IO.StreamWriter; need_node: MinimizableNode->boolean);
+    public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean);
     begin
       if MinimizableNode.ApplyNeedNode(extra_space, need_node) then
-        sw.Write( extra_space.original_section.ToString ) else
+        tw.Write( extra_space.original_section.ToString ) else
       if MinimizableNode.ApplyNeedNode(missing_space, need_node) then
         {Write missing space aka nothing} else
-        sw.Write( final_space );
+        tw.Write( final_space );
     end;
     public function CountLines(need_node: MinimizableNode->boolean) :=
     if MinimizableNode.ApplyNeedNode(extra_space, need_node) then extra_space.CountLines(need_node) else
@@ -376,7 +374,7 @@ type
     protected procedure CommonCleanupBody(is_invalid: MinimizableNode->boolean); abstract;
     protected procedure CommonAddDirectChildrenTo(l: List<MinimizableNode>); abstract;
     
-    public procedure CommonUnWrapTo(sw: System.IO.StreamWriter; need_node: MinimizableNode->boolean); abstract;
+    public procedure CommonUnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); abstract;
     public function CommonCountLines(need_node: MinimizableNode->boolean): integer; abstract;
     
     protected procedure CommonFillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); abstract;
@@ -394,10 +392,10 @@ type
       CommonAddDirectChildrenTo(l);
     end;
     
-    public procedure UnWrapTo(sw: System.IO.StreamWriter; need_node: MinimizableNode->boolean); override;
+    public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
     begin
-      if (pretext<>nil) and ((need_node=nil) or need_node(pretext)) then pretext.UnWrapTo(sw, need_node);
-      CommonUnWrapTo(sw, need_node);
+      if (pretext<>nil) and ((need_node=nil) or need_node(pretext)) then pretext.UnWrapTo(tw, need_node);
+      CommonUnWrapTo(tw, need_node);
     end;
     
     public function CountLines(need_node: MinimizableNode->boolean): integer; override;
@@ -431,7 +429,7 @@ type
     protected procedure CommonCleanupBody(is_invalid: MinimizableNode->boolean); override := exit;
     protected procedure CommonAddDirectChildrenTo(l: List<MinimizableNode>); override := exit;
     
-    public procedure CommonUnWrapTo(sw: System.IO.StreamWriter; need_node: MinimizableNode->boolean); override := exit;
+    public procedure CommonUnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override := exit;
     public function CommonCountLines(need_node: MinimizableNode->boolean): integer; override := 0;
     
     protected procedure CommonFillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); override := exit;
@@ -555,14 +553,14 @@ type
     protected procedure CommonCleanupBody(is_invalid: MinimizableNode->boolean); override := exit;
     protected procedure CommonAddDirectChildrenTo(l: List<MinimizableNode>); override := exit;
     
-    public procedure CommonUnWrapTo(sw: System.IO.StreamWriter; need_node: MinimizableNode->boolean); override;
+    public procedure CommonUnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
     begin
-      sw.Write(kw.ToString);
+      tw.Write(kw.ToString);
       if not body.IsInvalid then
       begin
-        sw.Write(' ');
-        sw.Write(body.ToString);
-        sw.Write(';');
+        tw.Write(' ');
+        tw.Write(body.ToString);
+        tw.Write(';');
       end;
     end;
     
@@ -640,19 +638,19 @@ type
       if space4<>nil then l += space4;
     end;
     
-    public procedure UnWrapTo(sw: System.IO.StreamWriter; need_node: MinimizableNode->boolean); override;
+    public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
     begin
-      space1.UnWrapTo(sw, need_node);
-      sw.Write(name.ToString);
+      space1.UnWrapTo(tw, need_node);
+      tw.Write(name.ToString);
       if not in_path.IsInvalid then
       begin
-        space2.UnWrapTo(sw, need_node);
-        sw.Write(in_separator);
-        space3.UnWrapTo(sw, need_node);
-        sw.Write(in_path.ToString);
+        space2.UnWrapTo(tw, need_node);
+        tw.Write(in_separator);
+        space3.UnWrapTo(tw, need_node);
+        tw.Write(in_path.ToString);
       end;
       if ApplyNeedNode(space4, need_node) then
-        space4.UnWrapTo(sw, need_node);
+        space4.UnWrapTo(tw, need_node);
     end;
     
     public function CountLines(need_node: MinimizableNode->boolean): integer; override;
@@ -768,13 +766,13 @@ type
     protected procedure CommonAddDirectChildrenTo(l: List<MinimizableNode>); override :=
     l += used_units;
     
-    public procedure CommonUnWrapTo(sw: System.IO.StreamWriter; need_node: MinimizableNode->boolean); override;
+    public procedure CommonUnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
     begin
-      sw.Write('uses');
+      tw.Write('uses');
       foreach var uu in used_units.EnmrDirect do
         if ApplyNeedNode(uu, need_node) then
-          uu.UnWrapTo(sw, need_node);
-      sw.Write(';');
+          uu.UnWrapTo(tw, need_node);
+      tw.Write(';');
     end;
     
     public function CommonCountLines(need_node: MinimizableNode->boolean): integer; override;
@@ -842,22 +840,10 @@ end;
 procedure ParsedPasFile.CleanupBody(is_invalid: MinimizableNode->boolean) := body.Cleanup(is_invalid);
 procedure ParsedPasFile.AddDirectChildrenTo(l: List<MinimizableNode>) := l += body;
 
-procedure ParsedPasFile.UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean);
-begin
-  var sw := new System.IO.StreamWriter(
-    System.IO.Path.Combine(new_base_dir, self.rel_fname),
-    false, write_enc
-  );
-  
-  try
-    foreach var cpi in body.EnmrDirect do
-      if ApplyNeedNode(cpi, need_node) then
-        cpi.UnWrapTo(sw, need_node);
-  finally
-    sw.Close;
-  end;
-  
-end;
+procedure ParsedPasFile.UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean) :=
+foreach var cpi in body.EnmrDirect do
+  if ApplyNeedNode(cpi, need_node) then
+    cpi.UnWrapTo(tw, need_node);
 
 function ParsedPasFile.CountLines(need_node: MinimizableNode->boolean): integer;
 begin

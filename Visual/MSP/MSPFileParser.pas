@@ -18,7 +18,24 @@ type
     protected function MakeMinimizable(dir, target: string): MinimizableContainer; override :=
     new MFileBatch(dir, target);
     
-    protected property Description: string read 'Line removal'; override;
+    protected property Description: string read 'Parsed item removal'; override;
+    
+    public function MakeTestUIElement(_m: MinimizableContainer; need_node: MinimizableNode->boolean): System.Windows.UIElement;// override;
+    begin
+      var m := MFileBatch(_m);
+      
+      m.ForEachParsed(f->
+      begin
+        var sw := new System.IO.StringWriter;
+        f.UnWrapTo(sw, nil); //ToDo
+        var text := sw.ToString;
+        
+        var (deleted, added) := f.GetChangedSections(need_node);
+        
+        
+      end);
+      
+    end;
     
   end;
   

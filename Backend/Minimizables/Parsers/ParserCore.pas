@@ -7,6 +7,8 @@ uses PathUtils        in '..\..\..\Utils\PathUtils';
 
 uses MinimizableCore  in '..\..\MinimizableCore';
 
+uses MConst           in '..\MConst';
+
 type
   
   {$region Text Utils}
@@ -416,7 +418,7 @@ type
     
     protected function get_original_text: string;
     
-    public procedure UnWrapTo(sw: System.IO.StreamWriter; need_node: MinimizableNode->boolean); abstract;
+    public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); abstract;
     public function CountLines(need_node: MinimizableNode->boolean): integer; abstract;
     
     protected procedure FillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); abstract;
@@ -453,8 +455,19 @@ type
     ///--
     public constructor := raise new System.InvalidOperationException;
     
-    public function ToString: string; override :=
-    $'File[{rel_fname}]';
+    public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); abstract;
+    public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); override;
+    begin
+      var sw := new System.IO.StreamWriter(
+        System.IO.Path.Combine(new_base_dir, self.rel_fname),
+        false, write_enc
+      );
+      try
+        UnWrapTo(sw, need_node);
+      finally
+        sw.Close;
+      end;
+    end;
     
     protected procedure FillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); abstract;
     protected procedure FillBodyPointAreasList(ind: StringIndex; l: List<PointAreasList>); abstract;
@@ -468,11 +481,22 @@ type
       Result := (deleted, added);
     end;
     
+    //ToDo Нет, всё же не то... После .Clenaup текст остаётся тот же, но многие ноды пропадают, поэтому индексы должны сдвигаться
+    // - И в PointAreasList нет смысла - если сдвигать индексы, то элементы идут в прямой последовательности (иначе слишком сложно?)
+    // - А вообще, теперь, имея original_section - это должно быть довольно реализовать через "if ind>len then ind-=len"
+    // - Но что тогда возвращать? new TextSection(skipped_count, skipped_count+original_section.Length)
+    // - И надо таки сделать функцию GetLength, возвращающую или пересчитывающую длину, если .Cleanup её сбросило
+    //ToDo GetChangedSections это всё тоже касается...
+    // - FillChangedSections должно возвращать StringIndex - кол-во пройденных символов - тогда GetLength само пересчитается при вызове FillChangedSections
+    // - И наверное стоит переименовать его... На RecalculateLenghts
     public function GetPointAreas(ind: StringIndex): PointAreasList;
     begin
       Result := new PointAreasList(new TextSection(original_text));
       FillBodyPointAreasList(ind, Result.SubAreas);
     end;
+    
+    public function ToString: string; override :=
+    $'File[{rel_fname}]';
     
   end;
   
