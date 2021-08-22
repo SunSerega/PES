@@ -5,8 +5,6 @@
 
 //ToDo Предупреждения
 // - Хранить в ParsedFileItem, чтоб можно было показать визуально
-//ToDo Визуальная часть
-// - И удалить .ToString-и отдельным коммитом, когда будет визуал
 
 interface
 
@@ -82,9 +80,6 @@ type
     protected procedure FillChangedSectionsBody(var skipped: integer; need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>); override := exit;
     protected procedure FillIndexAreasBody(var skipped: integer; ind: StringIndex; l: List<SIndexRange>); override := exit;
     
-    public function ToString: string; override :=
-    $'{self.f}:{text_type} [{range}] >>>{MakeStringSection}<<<';
-    
   end;
   
   MissingTextBlock = sealed class(MinimizableNode)
@@ -102,8 +97,6 @@ type
       if not Result then exit;
       l += new SIndexRange(ind, ind);
     end;
-    
-    public function ToString: string; override := $'~~~ Missing[{descr}]<<<';
     
   end;
   
@@ -208,7 +201,7 @@ type
           exit;
         end;
 //        read_head := sub_section.i2;
-        read_head += 1; //ToDo Вообще не вопрос, если бы .SubSectionOfFirst ловило все строки сразу, а так - скоре костыль
+        read_head := sub_section.I1+1; //ToDo Вообще не вопрос, если бы .SubSectionOfFirst ловило все строки сразу, а так - скоре костыль
         
         var kw := sub_section.ToString.ToUpper;
         
@@ -239,12 +232,32 @@ type
       inherited Create(f, StringIndex.Invalid);
       var expected_sub_strs := GetAllSubStrs(stoppers);
       
+//      var sw := Stopwatch.StartNew;
+//      var write_time := procedure(help: string)->
+//      if need_time then
+//      begin
+//        sw.Stop;
+//        $'{sw.Elapsed}: {help}'.Println;
+//        sw.Start;
+//      end;
+      
       var used_head := text.I1;
       var read_head := text.I1;
       while true do
       begin
+//        write_time($'Before string search');
         var sub_section := text.WithI1(read_head).SubSectionOfFirst(expected_sub_strs);
         
+//        if sub_section.IsInvalid then
+//          write_time($'Failed to find: [{expected_sub_strs.JoinToString(''], ['')}]') else
+//        begin
+//          var sub_section0 := sub_section
+//            .WithI1(Max(integer(sub_section.I1)-50, text.I1))
+//            .WithI2(Min(integer(sub_section.I2)+50, text.I2))
+//          ;
+//          write_time($'After string search: [{sub_section}] at {sub_section.range}: [{sub_section0}]');
+//        end;
+          
         // Nothing found - add rest as text and exit
         if sub_section.IsInvalid then
         begin
@@ -255,7 +268,7 @@ type
           self.len := text.Length;
           exit;
         end;
-        read_head += 1;
+        read_head := sub_section.I1+1;
         
         var kw := sub_section.ToString.ToUpper;
         
@@ -320,19 +333,6 @@ type
     foreach var part in parts.EnmrDirect do
       if part.FillIndexAreas(skipped, ind, l) then
         break;
-    
-    public function ToString: string; override;
-    begin
-      var res := new StringBuilder;
-      res += 'Batch of text:'#10;
-      foreach var part in parts.EnmrDirect do
-      begin
-//        res += #9;
-        res += part.ToString;
-        res += #10;
-      end;
-      Result := res.ToString;
-    end;
     
   end;
   
@@ -419,13 +419,6 @@ type
       end;
       Result := false;
     end;
-    
-    public function ToString: string; override :=
-    if missing_space<>nil then
-      'Missing' else
-    if extra_space<>nil then
-      'Extra:'+extra_space.MakeStringSection.ToString else
-      'Perfect:#'+integer( final_space );
     
   end;
   
@@ -527,8 +520,6 @@ type
     
     protected procedure CommonFillChangedSectionsBody(var skipped: integer; need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>); override := exit;
     protected procedure CommonFillIndexAreasBody(var skipped: integer; ind: StringIndex; l: List<SIndexRange>); override := exit;
-    
-    public function ToString: string; override := pretext.ToString;
     
   end;
   
@@ -696,7 +687,7 @@ type
       Result := kw.Length;
       if not has_body then exit;
       Result += space1.FileCleanup(is_invalid);
-      Result += kw.Length;
+      Result += body.Length;
       Result += 1; // ';'
       Result += line_break.FileCleanup(is_invalid);
     end;
@@ -720,16 +711,6 @@ type
       Result += space1.CountLines(need_node);
       Result += StringSection.Create(get_original_text, body).CountOf(#10);
       Result += line_break.CountLines(need_node);
-    end;
-    
-    public function ToString: string; override;
-    begin
-      var res := new StringBuilder;
-      if pretext<>nil then
-        res += pretext.ToString;
-      res += $'File header: KeyWord[{kw}] Body[{body}]';
-      //ToDo line_break?
-      Result := res.ToString;
     end;
     
     protected procedure CommonFillChangedSectionsBody(var skipped: integer; need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>); override;
@@ -991,51 +972,6 @@ type
       if (space4<>nil) and space4.FillIndexAreas(skipped, ind, l) then exit;
     end;
     
-    public function ToString: string; override;
-    begin
-      var res := new StringBuilder;
-      res += if has_in_path then 'UsedUnit' else 'UsedInUnit';
-      res += ':';
-      
-      res += ' Spacing[';
-      res += space1.ToString;
-      res += ']';
-      
-      res += ' Name[';
-      res += name.ToString;
-      res += ']';
-      
-      if has_in_path then
-      begin
-        
-        res += ' Spacing[';
-        res += space2.ToString;
-        res += ']';
-        
-        res += ' ';
-        res += in_separator;
-        res += ' ';
-        
-        res += ' Spacing[';
-        res += space3.ToString;
-        res += ']';
-        
-        res += ' Path[';
-        res += in_path.ToString;
-        res += ']';
-        
-      end;
-      
-      if space4<>nil then
-      begin
-        res += ' [';
-        res += space4.MakeStringSection.ToString;
-        res += ']';
-      end;
-      
-      Result := res.ToString;
-    end;
-    
   end;
   PFUsesSection = sealed class(CommonParsedItem)
     
@@ -1129,20 +1065,6 @@ type
       if line_break.FillIndexAreas(skipped, ind, l) then exit;
     end;
     
-    public function ToString: string; override;
-    begin
-      var res := new StringBuilder;
-      if pretext<>nil then
-        res += pretext.ToString;
-      res += 'Uses section:'#10;
-      foreach var uu in used_units.EnmrDirect do
-      begin
-        res += #9;
-        res += uu.ToString;
-      end;
-      Result := res.ToString; //ToDo line_break?
-    end;
-    
   end;
   
   {$endregion FileSections}
@@ -1192,7 +1114,6 @@ end;
 procedure ParsedPasFile.FillChangedSectionsBody(need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>);
 begin
   var skipped := 0;
-  self.rel_fname.Println;
   foreach var cpi in body.EnmrDirect do
     cpi.FillChangedSections(skipped, need_node, deleted, added);
 end;

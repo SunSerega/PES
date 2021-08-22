@@ -306,7 +306,7 @@ type
       Result := StringIndex.Invalid;
     end;
     
-    private static KMP_Cache := new Dictionary<string, array of StringIndex>;
+    private static KMP_Cache := new System.Collections.Concurrent.ConcurrentDictionary<string, array of StringIndex>;
     public function KMP_GetHeader(str: string): array of StringIndex;
     begin
       if KMP_Cache.TryGetValue(str, Result) then exit;
@@ -549,7 +549,7 @@ type
     public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); override;
     begin
       var sw := new System.IO.StreamWriter(
-        System.IO.Path.Combine(new_base_dir, self.rel_fname),
+        System.IO.Path.Combine(GetFullPath(new_base_dir), self.rel_fname),
         false, write_enc
       );
       try
@@ -591,31 +591,6 @@ type
       Result := new List<SIndexRange>;
       FillIndexAreasBody(ind, Result);
     end;
-    
-    {$region}
-    //ToDo Нет, всё же не то... После .Clenaup текст остаётся тот же, но многие ноды пропадают, поэтому индексы должны сдвигаться
-    // - И в PointAreasList нет смысла - если сдвигать индексы, то элементы идут в прямой последовательности (иначе слишком сложно?)
-    // - А вообще, теперь, имея original_section - это должно быть довольно реализовать через "if ind>len then ind-=len"
-    // - Но что тогда возвращать? new SIndexRange(skipped_count, skipped_count+original_section.Length)
-    // - И надо таки сделать функцию GetLength, возвращающую или пересчитывающую длину, если .Cleanup её сбросило
-    //ToDo GetChangedSections это всё тоже касается...
-    // - FillChangedSections должно возвращать StringIndex - кол-во пройденных символов - тогда GetLength само пересчитается при вызове FillChangedSections
-    // - И наверное стоит переименовать его... На RecalculateLenghts
-    //=====
-    //ToDo То есть, в итоге:
-    // - .FileCleanup поверх .Cleanup
-    // --- 
-    // - Конструктор и .FileCleanup заполняют поле len
-    // --- Конструкторы имеют "text: TextSection", из него len изи получить
-    // --- 
-    // - FillChangedSections заполняет что заполнял, но по-другому
-    // --- 
-    // - FillIndexAreas заполняет список SIndexRange-ей в которые попал курсор
-    // --- 
-    {$endregion}
-    
-    public function ToString: string; override :=
-    $'File[{rel_fname}]';
     
   end;
   

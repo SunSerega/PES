@@ -46,7 +46,8 @@ type
       foreach var sub_dir in EnumerateAllDirectories(dir) do
         sub_dirs += GetRelativePath(sub_dir, dir);
       
-      foreach var fname in EnumerateAllFiles(dir) do
+      System.Threading.Tasks.Parallel.ForEach(EnumerateAllFiles(dir), fname->
+//      foreach var fname in EnumerateAllFiles(dir) do
       begin
         var f := ParsedFile.ParseByExt.Get(System.IO.Path.GetExtension(fname));
         if f=nil then
@@ -58,7 +59,7 @@ type
           {$endif DEBUG}
           parsed += p;
         end;
-      end;
+      end);
       
     end;
     

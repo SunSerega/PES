@@ -221,7 +221,6 @@ type
         var text := sw.ToString;
         
         var (deleted, added) := f.GetChangedSections(need_node);
-        deleted.PrintLines;
         
         var tab_item := new TabItem;
         res.Items.Add(tab_item);

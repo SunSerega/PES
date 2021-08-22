@@ -82,8 +82,7 @@ type
         except
           on e: Exception do
           begin
-            Writeln(curr_test_dir);
-            Writeln(e);
+            MessageBox.Show(e.ToString, curr_test_dir);
             continue;
           end;
         end;
