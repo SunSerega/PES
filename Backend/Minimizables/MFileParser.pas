@@ -8,6 +8,9 @@ uses MConst;
 uses ParserCore       in 'Parsers\ParserCore';
 
 type
+  StringIndex = ParserCore.StringIndex;
+  SIndexRange = ParserCore.SIndexRange;
+  AddedText = ParserCore.AddedText;
   ParsedFile = ParserCore.ParsedFile;
   
   MFilePetrified = sealed class(MinimizableNode)
@@ -21,7 +24,7 @@ type
     end;
     
     protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); override := exit;
-    public procedure AddDirectChildrenTo(l: List<MinimizableNode>); override := exit;
+    public procedure AddDirectBodyChildrenTo(l: List<MinimizableNode>); override := exit;
     
     public procedure UnWrapTo(new_base_dir: string) :=
     CopyFile(
@@ -48,7 +51,13 @@ type
         var f := ParsedFile.ParseByExt.Get(System.IO.Path.GetExtension(fname));
         if f=nil then
           petrified += new MFilePetrified(fname, dir, target) else
-          parsed += f(fname, dir, target);
+        begin
+          var p := f(fname, dir, target);
+          {$ifdef DEBUG}
+          p.AssertIntegrity;
+          {$endif DEBUG}
+          parsed += p;
+        end;
       end;
       
     end;
@@ -58,7 +67,7 @@ type
       petrified.Cleanup(is_invalid);
          parsed.Cleanup(is_invalid);
     end;
-    public procedure AddDirectChildrenTo(l: List<MinimizableNode>); override;
+    public procedure AddDirectBodyChildrenTo(l: List<MinimizableNode>); override;
     begin
       l += petrified;
       l += parsed;

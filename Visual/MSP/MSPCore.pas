@@ -69,6 +69,7 @@ type
     end;
     
     public function MakeUIElement: System.Windows.UIElement; abstract;
+    public function MakeTestUIElement(m: MinimizableContainer; need_node: MinimizableNode->boolean): System.Windows.UIElement; abstract;
     
   end;
   

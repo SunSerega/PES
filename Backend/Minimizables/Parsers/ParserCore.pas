@@ -92,91 +92,123 @@ type
     
   end;
   
-  TextSection = record
-    public text: string := nil;
+  SIndexRange = record
     public i1, i2: StringIndex; // [i1,i2)
     
     public property Length: integer read i2 - i1;
     
-    public static property Invalid: TextSection read default(TextSection);
-    public property IsInvalid: boolean read text=nil;
-    
-    public constructor(text: string; i1, i2: StringIndex);
+    public constructor(i1, i2: StringIndex);
     begin
-      if i1>i2 then raise new System.InvalidOperationException($'TextSection cannot have range {i1}..{i2}');
-      self.text := text;
       self.i1 := i1;
       self.i2 := i2;
+      if i1>i2 then raise new System.InvalidOperationException($'Invalid range {self}');
     end;
+    public constructor := raise new System.InvalidOperationException;
+    
+    public static function operator in(ind: StringIndex; range: SIndexRange) := (ind>=range.i1) and (ind<=range.i2);
+    
+    public function ToString: string; override := $'{i1}..{i2}';
+    public function ToString(whole_text: string) := whole_text.SubString(i1, i2-i1);
+    
+  end;
+  
+  StringSection = record
+    public text: string := nil;
+    public range: SIndexRange;
+    
+    public property I1: StringIndex read range.i1;
+    public property I2: StringIndex read range.i2;
+    public property Length: integer read range.Length;
+    
+    public static property Invalid: StringSection read default(StringSection);
+    public property IsInvalid: boolean read text=nil;
+    
+    public constructor(text: string; range: SIndexRange);
+    begin
+      self.text := text;
+      self.range := range;
+    end;
+    public constructor(text: string; i1, i2: StringIndex) := Create(text, new SIndexRange(i1, i2));
     public constructor(text: string) := Create(text, 0, text.Length);
+    public constructor := raise new System.InvalidOperationException;
     
-    public procedure ValidateIndex(ind: StringIndex) :=
-    if (ind >= StringIndex(Length)) then raise new System.IndexOutOfRangeException($'Index {ind} was > {Length}');
+    public procedure ValidateInd(ind: StringIndex) :=
+    if (ind >= StringIndex(Length)) then raise new System.IndexOutOfRangeException($'Index {ind} was >= {Length}');
+    public procedure ValidateLen(len: StringIndex) :=
+    if (len > StringIndex(Length)) then raise new System.IndexOutOfRangeException($'Length {len} was > {Length}');
     
-    public static function operator in(ind: StringIndex; text: TextSection) := (ind>=text.i1) and (ind<=text.i2);
+    public static function operator in(ind: StringIndex; text: StringSection) := ind in text.range;
     
     private function GetItemAt(ind: StringIndex): char;
     begin
-      ValidateIndex(ind);
+      ValidateInd(ind);
       Result := text[self.i1+ind];
     end;
     public property Item[ind: StringIndex]: char read GetItemAt write
     begin
-      ValidateIndex(ind);
+      ValidateInd(ind);
       text[self.i1+ind] := value;
     end; default;
     public function Last := text[i2-1];
     
-    public function WithI1(i1: StringIndex) := new TextSection(text, i1, i2);
-    public function WithI2(i2: StringIndex) := new TextSection(text, i1, i2);
+    public function Prev(low_bound_incl: StringIndex): char? := self.I1>low_bound_incl ? text[I1-1] : nil;
+    public function Prev := Prev(0);
+    public function Prev(bounds: StringSection) := Prev(bounds.I1);
     
-    public function TrimStart(chars: string): TextSection;
+    public function Next(upr_bound_n_in: StringIndex): char? := self.I2<upr_bound_n_in ? text[I2] : nil;
+    public function Next := Next(self.text.Length);
+    public function Next(bounds: StringSection) := Next(bounds.I2);
+    
+    public function WithI1(i1: StringIndex) := new StringSection(text, i1, i2);
+    public function WithI2(i2: StringIndex) := new StringSection(text, i1, i2);
+    
+    public function TrimStart(chars: string): StringSection;
     begin
       Result := self;
       while (Result.Length<>0) and (Result[0] in chars) do
-        Result.i1 += 1;
+        Result.range.i1 += 1;
     end;
-    public function TrimEnd(chars: string): TextSection;
+    public function TrimEnd(chars: string): StringSection;
     begin
       Result := self;
       while (Result.Length<>0) and (Result.Last in chars) do
-        Result.i2 -= 1;
+        Result.range.i2 -= 1;
     end;
     public function Trim(chars: string) := self.TrimStart(chars).TrimEnd(chars);
     
-    public function TrimStart(i1_shift: StringIndex) := new TextSection(self.text, self.i1+i1_shift, self.i2);
-    public function TrimEnd  (i2_shift: StringIndex) := new TextSection(self.text, self.i1, self.i2-i2_shift);
+    public function TrimStart(i1_shift: StringIndex) := new StringSection(self.text, self.i1+i1_shift, self.i2);
+    public function TrimEnd  (i2_shift: StringIndex) := new StringSection(self.text, self.i1, self.i2-i2_shift);
     
-    public function TakeFirst(len: StringIndex): TextSection;
+    public function TakeFirst(len: StringIndex): StringSection;
     begin
-      ValidateIndex(len);
-      Result := new TextSection(self.text, self.i1, self.i1+len);
+      ValidateLen(len);
+      Result := new StringSection(self.text, self.i1, self.i1+len);
     end;
-    public function TakeLast(len: StringIndex): TextSection;
+    public function TakeLast(len: StringIndex): StringSection;
     begin
-      ValidateIndex(len);
-      Result := new TextSection(self.text, self.i2-len, self.i2);
+      ValidateLen(len);
+      Result := new StringSection(self.text, self.i2-len, self.i2);
     end;
     
-    public function TrimAfterFirst(ch: char): TextSection;
+    public function TrimAfterFirst(ch: char): StringSection;
     begin
       var ind := self.IndexOf(ch);
       Result := if ind.IsInvalid then
-        TextSection.Invalid else
-        new TextSection(self.text, self.i1, self.i1+ind+1);
+        StringSection.Invalid else
+        new StringSection(self.text, self.i1, self.i1+ind+1);
     end;
-    public function TrimAfterFirst(str: string): TextSection;
+    public function TrimAfterFirst(str: string): StringSection;
     begin
       var ind := self.IndexOf(str);
       Result := if ind.IsInvalid then
-        TextSection.Invalid else
-        new TextSection(self.text, self.i1, self.i1+ind+str.Length);
+        StringSection.Invalid else
+        new StringSection(self.text, self.i1, self.i1+ind+str.Length);
     end;
     
-    public function SubSection(ind1, ind2: StringIndex): TextSection;
+    public function SubSection(ind1, ind2: StringIndex): StringSection;
     begin
-      ValidateIndex(ind2-1);
-      Result := new TextSection(self.text, self.i1+ind1, self.i1+ind2);
+      ValidateLen(ind2);
+      Result := new StringSection(self.text, self.i1+ind1, self.i1+ind2);
     end;
     
     public function IsWhiteSpace: boolean;
@@ -194,31 +226,42 @@ type
         Result += integer( text[i].ToUpper = ch.ToUpper );
     end;
     
-    public static function operator=(text1, text2: TextSection): boolean;
+    public static function operator=(text1, text2: StringSection): boolean;
     begin
       Result := false;
       if text1.Length <> text2.Length then exit;
       for var i := 0 to text1.Length-1 do
-        if text1[i]<>text2[i] then exit;
+        if text1[i].ToUpper<>text2[i].ToUpper then exit;
       Result := true;
     end;
-    public static function operator=(text: TextSection; str: string): boolean;
+    public static function operator=(text: StringSection; str: string): boolean;
     begin
       Result := false;
       if str=nil then raise new System.ArgumentNullException;
       if text.IsInvalid then exit;
       if text.Length<>str.Length then exit;
       for var i := 0 to str.Length-1 do
-        if text[i]<>str[i] then exit;
+        if text[i].ToUpper<>str[i].ToUpper then exit;
       Result := true;
     end;
-    public static function operator=(str: string; text: TextSection): boolean := text=str;
+    public static function operator=(str: string; text: StringSection): boolean := text=str;
     
     public function StartsWith(str: string): boolean;
     begin
       Result := false;
+      if self.Length<str.Length then exit;
       for var i := 0 to str.Length-1 do
         if str[i].ToUpper <> self[i].ToUpper then
+          exit;
+      Result := true;
+    end;
+    public function EndsWith(str: string): boolean;
+    begin
+      Result := false;
+      if self.Length<str.Length then exit;
+      var shift := self.Length-str.Length;
+      for var i := 0 to str.Length-1 do
+        if str[i].ToUpper <> self[i+shift].ToUpper then
           exit;
       Result := true;
     end;
@@ -244,6 +287,18 @@ type
     begin
       for var i: integer := self.i1 to self.i2-1 do
         if ch_validator(text[i]) then
+        begin
+          Result := i - integer(self.i1);
+          exit;
+        end;
+      Result := StringIndex.Invalid;
+    end;
+    
+    public function LastIndexOf(ch: char): StringIndex;
+    begin
+      ch := ch.ToUpper;
+      for var i: integer := self.i2-1 downto self.i1 do
+        if text[i].ToUpper = ch then
         begin
           Result := i - integer(self.i1);
           exit;
@@ -316,7 +371,7 @@ type
       Result += from;
     end;
     
-    public function SubSectionOfFirst(params strs: array of string): TextSection;
+    public function SubSectionOfFirst(params strs: array of string): StringSection;
     begin
       var min_str_len := strs.Min(str->str.Length);
       if min_str_len=0 then raise new System.ArgumentException(strs.JoinToString(#10));
@@ -342,7 +397,7 @@ type
               if curr_ind = str.Length-1 then
               begin
                 var ind_end := text_i+1;
-                Result := new TextSection(self.text, ind_end-str.Length, ind_end);
+                Result := new StringSection(self.text, ind_end-str.Length, ind_end);
                 exit;
               end;
             end else
@@ -358,34 +413,17 @@ type
         end;
       end;
       
-      Result := TextSection.Invalid;
+      Result := StringSection.Invalid;
     end;
     
     public function ToString: string; override :=
-    if self.IsInvalid then 'Invalid' else text.Substring(i1,i2-i1);
+    if self.IsInvalid then 'Invalid' else range.ToString(text);
     
   end;
   
   {$endregion Text Utils}
   
   {$region Visualization Utils}
-  
-  PointAreasList = record
-    private s: TextSection;
-    private sub_areas := new List<PointAreasList>;
-    
-    public constructor(s: TextSection) := self.s := s;
-    public constructor(s: TextSection; l: PointAreasList);
-    begin
-      self.s := s;
-      self.sub_areas += l;
-    end;
-    private constructor := raise new System.InvalidOperationException;
-    
-    public property Section: TextSection read s;
-    public property SubAreas: List<PointAreasList> read sub_areas;
-    
-  end;
   
   AddedText = record
     public ind: StringIndex;
@@ -396,6 +434,7 @@ type
       self.ind := ind;
       self.descr := descr;
     end;
+    public constructor := raise new System.InvalidCastException;
     
   end;
   
@@ -405,38 +444,87 @@ type
   ParsedFile = class;
   
   ParsedFileItem = abstract class(MinimizableNode)
-    public f: ParsedFile;
-    public original_section: TextSection;
+    protected f: ParsedFile;
+    protected len: StringIndex;
     
-    public constructor(f: ParsedFile; original_section: TextSection);
+    protected function get_original_text: string;
+    
+    public constructor(f: ParsedFile; len: StringIndex);
     begin
       self.f := f;
-      self.original_section := original_section;
+      self.len := len;
     end;
     ///--
     public constructor := raise new System.InvalidOperationException;
     
-    protected function get_original_text: string;
-    
     public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); abstract;
     public function CountLines(need_node: MinimizableNode->boolean): integer; abstract;
     
-    protected procedure FillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); abstract;
-    protected procedure FillBodyPointAreasList(ind: StringIndex; l: List<PointAreasList>); abstract;
+    protected procedure FillChangedSectionsBody(var skipped: integer; need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>); abstract;
+    protected procedure FillIndexAreasBody(var skipped: integer; ind: StringIndex; l: List<SIndexRange>); abstract;
     
-    public procedure FillChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>);
+    public procedure FillChangedSections(var skipped: integer; need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>);
     begin
+      var skipped_v := skipped;
+      skipped := skipped_v+len;
       if not need_node(self) then
-        deleted += original_section else
-        FillBodyChangedSections(need_node, deleted, added);
+        deleted += new SIndexRange(skipped_v, skipped_v+len) else
+        FillChangedSectionsBody(skipped_v, need_node, deleted, added);
     end;
-    public function FillPointAreasList(ind: StringIndex; var l: PointAreasList): boolean;
+    /// Adds self (and sub-regions) into l, if ind is inside self
+    /// skipped=area of prev items
+    /// Result=true if need stop the search
+    public function FillIndexAreas(var skipped: integer; ind: StringIndex; l: List<SIndexRange>): boolean;
     begin
-      Result := ind in original_section;
-      if not Result then exit;
-      l := new PointAreasList(original_section);
-      FillBodyPointAreasList(ind, l.SubAreas);
+      Result := AddIndexArea(skipped, ind, self.len, l);
+      if Result then FillIndexAreasBody(skipped, ind, l);
     end;
+    public static function AddIndexArea(var skipped: integer; ind: StringIndex; area_len: StringIndex; l: List<SIndexRange>): boolean;
+    begin
+      var skipped_v := skipped;
+      {$ifdef DEBUG}
+      if skipped_v > integer(ind) then
+        raise new System.InvalidOperationException;
+      {$endif DEBUG}
+      
+      // (area_len+skipped_v > ind) or (area_len+skipped_v = ind) and (area_len=0)
+      Result := Sign(area_len+skipped_v - ind)+integer(area_len=0)>0;
+      if Result then
+        l += new SIndexRange(skipped_v, skipped_v+area_len) else
+        // no need to change skipped "if Result", because "if AddIndexArea(...) then exit" is expected
+        skipped := skipped_v+area_len;
+      
+    end;
+    public static function AddIndexArea(var skipped: integer; ind: StringIndex; area_literal: string; l: List<SIndexRange>) :=
+    AddIndexArea(skipped, ind, area_literal.Length, l);
+    public static function AddIndexArea(var skipped: integer; ind: StringIndex; area_range: SIndexRange; l: List<SIndexRange>) :=
+    AddIndexArea(skipped, ind, area_range.Length, l);
+    
+    protected function FileCleanupBody(is_invalid: MinimizableNode->boolean): integer; abstract;
+    public function FileCleanup(is_invalid: MinimizableNode->boolean): StringIndex;
+    begin
+//      Writeln(f.GetType.GetProperty('PrintableName').GetValue(f));
+//      Writeln(self.GetType, ': ', len);
+      Result := FileCleanupBody(is_invalid);
+      self.len := Result;
+//      Writeln(self.GetType, ': ', len);
+//      Writeln('='*30);
+    end;
+    public static function FileListCleanup<TNode>(l: MinimizableNodeList<TNode>; is_invalid: MinimizableNode->boolean): integer;
+    where TNode: ParsedFileItem;
+    begin
+      var res := 0;
+      l.RemoveAll(pfi->
+      begin
+        var len := pfi.FileCleanup(is_invalid);
+        Result := len.IsInvalid;
+        if not Result then res += len;
+      end);
+      Result := res;
+    end;
+    ///--
+    protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); override :=
+    raise new System.InvalidOperationException('call .FileCleanup');
     
   end;
   
@@ -455,6 +543,8 @@ type
     ///--
     public constructor := raise new System.InvalidOperationException;
     
+    public property PrintableName: string read System.IO.Path.GetFileName(rel_fname);
+    
     public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); abstract;
     public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); override;
     begin
@@ -469,31 +559,60 @@ type
       end;
     end;
     
-    protected procedure FillBodyChangedSections(need_node: MinimizableNode->boolean; deleted: List<TextSection>; added: List<AddedText>); abstract;
-    protected procedure FillBodyPointAreasList(ind: StringIndex; l: List<PointAreasList>); abstract;
+    public procedure AssertIntegrity;
+    begin
+      var sw := new System.IO.StringWriter;
+      self.UnWrapTo(sw, nil);
+      var unwraped := sw.ToString;
+      if original_text <> unwraped then
+      begin
+        System.IO.Directory.CreateDirectory('Error');
+        var ext := System.IO.Path.GetExtension(rel_fname);
+        WriteAllText('Error\original'+ext, original_text, write_enc);
+        WriteAllText('Error\unwraped'+ext, unwraped, write_enc);
+        raise new System.InvalidProgramException($'[{self.GetType}] failed on file [{rel_fname}]; Compare result in "Error" folder');
+      end;
+    end;
+    
+    protected procedure FillChangedSectionsBody(need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>); abstract;
+    protected procedure FillIndexAreasBody(ind: StringIndex; l: List<SIndexRange>); abstract;
     
     /// (deleted, added)
-    public function GetChangedSections(need_node: MinimizableNode->boolean): (List<TextSection>, List<AddedText>);
+    public function GetChangedSections(need_node: MinimizableNode->boolean): (List<SIndexRange>, List<AddedText>);
     begin
-      var deleted := new List<TextSection>;
+      var deleted := new List<SIndexRange>;
       var added := new List<AddedText>;
-      FillBodyChangedSections(need_node, deleted, added);
+      FillChangedSectionsBody(need_node, deleted, added);
       Result := (deleted, added);
     end;
     
+    public function GetIndexAreas(ind: StringIndex): List<SIndexRange>;
+    begin
+      Result := new List<SIndexRange>;
+      FillIndexAreasBody(ind, Result);
+    end;
+    
+    {$region}
     //ToDo Нет, всё же не то... После .Clenaup текст остаётся тот же, но многие ноды пропадают, поэтому индексы должны сдвигаться
     // - И в PointAreasList нет смысла - если сдвигать индексы, то элементы идут в прямой последовательности (иначе слишком сложно?)
     // - А вообще, теперь, имея original_section - это должно быть довольно реализовать через "if ind>len then ind-=len"
-    // - Но что тогда возвращать? new TextSection(skipped_count, skipped_count+original_section.Length)
+    // - Но что тогда возвращать? new SIndexRange(skipped_count, skipped_count+original_section.Length)
     // - И надо таки сделать функцию GetLength, возвращающую или пересчитывающую длину, если .Cleanup её сбросило
     //ToDo GetChangedSections это всё тоже касается...
     // - FillChangedSections должно возвращать StringIndex - кол-во пройденных символов - тогда GetLength само пересчитается при вызове FillChangedSections
     // - И наверное стоит переименовать его... На RecalculateLenghts
-    public function GetPointAreas(ind: StringIndex): PointAreasList;
-    begin
-      Result := new PointAreasList(new TextSection(original_text));
-      FillBodyPointAreasList(ind, Result.SubAreas);
-    end;
+    //=====
+    //ToDo То есть, в итоге:
+    // - .FileCleanup поверх .Cleanup
+    // --- 
+    // - Конструктор и .FileCleanup заполняют поле len
+    // --- Конструкторы имеют "text: TextSection", из него len изи получить
+    // --- 
+    // - FillChangedSections заполняет что заполнял, но по-другому
+    // --- 
+    // - FillIndexAreas заполняет список SIndexRange-ей в которые попал курсор
+    // --- 
+    {$endregion}
     
     public function ToString: string; override :=
     $'File[{rel_fname}]';

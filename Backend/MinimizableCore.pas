@@ -17,7 +17,7 @@ type
     public property IsInvulnerable: boolean read boolean(invulnerable); virtual;
     
     protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); abstract;
-    protected procedure AddDirectChildrenTo(l: List<MinimizableNode>); abstract;
+    protected procedure AddDirectBodyChildrenTo(l: List<MinimizableNode>); abstract;
     
     public function Cleanup(is_invalid: MinimizableNode->boolean): boolean;
     begin
@@ -26,6 +26,11 @@ type
       CleanupBody(is_invalid);
     end;
     
+    protected procedure AddDirectChildrenTo(l: List<MinimizableNode>);
+    begin
+//      l += self;
+      AddDirectBodyChildrenTo(l);
+    end;
     public function GetAllVulnerableNodes: List<MinimizableNode>;
     begin
       Result := new List<MinimizableNode>;
@@ -38,7 +43,9 @@ type
       begin
         foreach var n in prev do
           n.AddDirectChildrenTo(curr);
-        Result.AddRange(curr);
+        foreach var n in curr do
+          if not n.IsInvulnerable then
+            Result += n;
         Swap(prev, curr);
         curr.Clear;
       end;
@@ -62,8 +69,8 @@ type
     protected invulnerable: boolean;
     public property IsInvulnerable: boolean read invulnerable;
     
-    public procedure Cleanup(is_invalid: MinimizableNode->boolean) :=
-    nodes.RemoveAll(n->n.Cleanup(is_invalid));
+    public procedure RemoveAll(f: TNode->boolean) := nodes.RemoveAll(f);
+    public procedure Cleanup(is_invalid: MinimizableNode->boolean) := RemoveAll(n->n.Cleanup(is_invalid));
     
     public procedure Add(n: TNode);
     begin
@@ -168,7 +175,7 @@ type
     ///--
     private constructor := raise new System.InvalidOperationException;
     
-    protected property Removing: HashSet<MinimizableNode> read rem;
+    public property Removing: HashSet<MinimizableNode> read rem;
     public function EnmrNodes: sequence of MinimizableNode; override := parent.EnmrNodes.Where(n->not rem.Contains(n));
     
   end;
@@ -282,6 +289,8 @@ type
     private c: InternalMinimizationContext;
     private layer: integer;
     
+    public property FirstNode: MinimizableContainer read c.nc;
+    
     public function Execute: boolean;
     
     protected event ReportLineCount: integer->();
@@ -364,9 +373,10 @@ uses ThreadUtils;
 procedure operator+=<TNode>(l: List<MinimizableNode>; n: TNode); extensionmethod;
 where TNode: MinimizableNode;
 begin
-  //ToDo #????
-  if (n as MinimizableNode).IsInvulnerable then exit;
   l.Add( n );
+  //ToDo Переразобраться где .Add, а где что
+  // - И удалить что осталось закомменчено
+//  n.AddDirectChildrenTo(l);
 end;
 
 procedure operator+=<TNode>(l: List<MinimizableNode>; nl: MinimizableNodeList<TNode>); extensionmethod;
@@ -375,6 +385,7 @@ begin
   l.Capacity := l.Capacity.ClampBottom(l.Count+nl.nodes.Count);
   foreach var n in nl.nodes do
     l += n;
+//    n.AddDirectChildrenTo(l);
 end;
 
 /// l=кол-во элементов которые убирают

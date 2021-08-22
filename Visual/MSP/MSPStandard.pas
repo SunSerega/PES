@@ -70,7 +70,7 @@ type
     private contains_sub_items := false;
     public property ContainsSubItems: boolean read contains_sub_items;
     
-    public constructor(ti: TestInfo);
+    public constructor(ti: TestInfo; msp: MinimizationStagePart; m: MinimizableContainer);
     begin
       
       var b := new Border;
@@ -123,20 +123,42 @@ type
         
         var dl := new SimpleDisplayList;
         self.Content := dl;
+        dl.Header := b;
         dl.ItemsShift := 10;
         dl.VerticalAlignment := System.Windows.VerticalAlignment.Top;
         dl.ShowItems := false;
-        dl.Header := b;
         
         cti.SubTestAdded += sub_ti->dl.Dispatcher.InvokeAsync(()->
         try
-          var tic := new TestInfoContainer(sub_ti);
+          var tic := new TestInfoContainer(sub_ti, msp, m);
           dl.AddElement(tic, tic.Anchor);
         except
           on e: Exception do
             MessageBox.Show(e.ToString);
         end);
         
+      end else
+      if ti is RemTestInfo(var rti) then
+      begin
+        var cc := new ClickableContent;
+        cc.Content := b;
+        
+        cc.Click += (o,e)->
+        begin
+          var thr := new System.Threading.Thread(()->
+          begin
+            var w := new Window;
+            w.Content := msp.MakeTestUIElement(m, n->not rti.Removing.Contains(n));
+            w.KeyUp += (ko,ke)->if ke.Key = System.Windows.Input.Key.Escape then w.Close;
+            w.Show;
+            System.Windows.Threading.Dispatcher.Run;
+          end);
+          thr.ApartmentState := System.Threading.ApartmentState.STA;
+          thr.IsBackground := true;
+          thr.Start;
+        end;
+        
+        self.Content := cc;
       end else
         self.Content := b;
       
@@ -172,7 +194,7 @@ type
       self.Padding := new Thickness(5);
     end;
     
-    protected procedure SetCounter(main_counter: MinimizationCounter; descr: string);
+    protected procedure SetCounter(msp: MinimizationStagePart; main_counter: MinimizationCounter; descr: string);
     begin
       var sr := new SmoothResizer;
       self.Child := sr;
@@ -214,7 +236,8 @@ type
         
         layer_counter.NewTestInfo += ti->cc.Dispatcher.Invoke(()->
         begin
-          var tic := new TestInfoContainer(ti);
+          var tic := new TestInfoContainer(ti, msp, layer_counter.FirstNode);
+          
           tests_cont.AddElement(tic, tic.Anchor);
           tic.TestSucessfulChanged += ts->tests_cont.InvalidateMeasure();
         end);
@@ -232,7 +255,7 @@ type
     protected property Description: string read; abstract;
     
     protected procedure OnCounterCreated(counter: MinimizationCounter); override :=
-    self.v.Dispatcher.Invoke(()->v.SetCounter(counter, self.Description));
+    self.v.Dispatcher.Invoke(()->v.SetCounter(self, counter, self.Description));
     
     public function MakeUIElement: System.Windows.UIElement; override;
     begin
