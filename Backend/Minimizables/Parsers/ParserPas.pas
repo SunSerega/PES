@@ -376,17 +376,17 @@ type
       
     end;
     
-    public static function ReadStart(var ptext: StringSection; f: ParsedPasFile; final_space: char := ' '): SpacingBlock;
+    public static function ReadStart(var text: StringSection; f: ParsedPasFile; final_space: char := ' '): SpacingBlock;
     begin
-      var text := ptext;
-      
-      var ind := 0;
-      var max_len := text.Length;
-      while (ind<max_len) and char.IsWhiteSpace(text[ind]) do
-        ind += 1;
-      ptext := text.TrimStart(ind);
-      
-      Result := new SpacingBlock(text.TakeFirst(ind), f, final_space);
+      var section := text.WithI2(text.I1).NextWhile(text.I2, char.IsWhiteSpace);
+      text := text.WithI1(section.I2);
+      Result := new SpacingBlock(section, f, final_space);
+    end;
+    public static function ReadEnd(var text: StringSection; f: ParsedPasFile; final_space: char := ' '): SpacingBlock;
+    begin
+      var section := text.WithI1(text.I2).PrevWhile(text.I1, char.IsWhiteSpace);
+      text := text.WithI2(section.I1);
+      Result := new SpacingBlock(section, f, final_space);
     end;
     
     protected function FileCleanup(is_invalid: MinimizableNode->boolean): integer;
@@ -564,9 +564,179 @@ type
   
   {$region Operator}
   
+  PFOperatorBlock = sealed class(ParsedFileItem)
+    
+    private header: SIndexRange;
+    private line_break1: SpacingBlock;
+    private body := new MinimizableNodeList<ParsedFileItem>;
+    private const end_string = 'end';
+    private space1: MiscTextBlock;
+    private end_closer: MiscTextBlock; private const allowed_end_closers = ';.';
+    private line_break2: SpacingBlock;
+    
+    private static body_mrcd := MidReadCreationDict.Create(nil)
+//      .Add(PFAnyOperator.mrcd_value)
+    ;
+    static constructor := body_mrcd
+      .Add(PFOperatorBlock.mrcd_value)
+      .Add(|end_string|, new MRCDValue(
+        (section, text)->
+        begin
+          Result := StringSection.Invalid;
+          
+          var prev := section.Prev(text);
+          if (prev<>nil) and not char.IsWhiteSpace(prev.Value) then exit;
+          
+          var last_i2 := section.I2;
+          section := section.NextWhile(text.I2, char.IsWhiteSpace);
+          var next := section.Next(text);
+          if (next<>nil) and (next.Value in allowed_end_closers) then
+          begin
+            section.range.i2 += 1;
+            section := section.NextWhile(text.I2, char.IsWhiteSpace);
+          end;
+          if section.I2 = last_i2 then exit;
+          
+          Result := section;
+        end, nil, nil
+      ))
+    ;
+    
+    //ToDo Сделать обратный порядок параметров в конструкторах и MakeNew
+    public constructor(text: StringSection; f: ParsedPasFile);
+    begin
+      inherited Create(f, text.Length);
+      header := text.WithI2(text.I1).NextWhile(text.I2, CharIsNamePart, 1).range;
+      text := text.WithI1(header.i2);
+      
+      line_break1 := SpacingBlock.ReadStart(text, f, #10);
+      
+      var ind := body_mrcd.ReadSection(text, f, true, body.Add);
+      text := text.WithI1(ind);
+      
+      if not text.StartsWith(end_string) then raise new System.InvalidOperationException(text.ToString);
+      text.range.i1 += end_string.Length;
+      
+      line_break2 := SpacingBlock.ReadEnd(text, f, #10);
+      if allowed_end_closers.Any(ch->text.EndsWith(ch)) then
+      begin
+        end_closer := new MiscTextBlock(text.TakeLast(1), f, TT_Name);
+        text.range.i2 -= 1;
+      end;
+      
+      if text.Length<>0 then
+        space1 := new MiscTextBlock(text, f, TT_WhiteSpace);
+      
+    end;
+    
+    public static keywords := |'begin', 'try', 'case', 'match'|;
+    public static function ValidateKW(section, text: StringSection): StringSection;
+    begin
+      Result := StringSection.Invalid;
+      
+      var prev := section.Prev(text);
+      if (prev<>nil) and not char.IsWhiteSpace(prev.Value) then exit;
+      
+      section := section.NextWhile(text.I2, char.IsWhiteSpace, 1);
+      if section.IsInvalid then exit;
+      
+      section := body_mrcd.ValidateSection(section, text);
+      if not text.WithI1(section.I2).StartsWith(end_string) then exit;
+      section.range.i2 += end_string.Length;
+      
+      section := section.NextWhile(text.I2, char.IsWhiteSpace);
+      var next := section.Next(text);
+      if (next<>nil) and (next.Value in allowed_end_closers) then
+      begin
+        section.range.i2 += 1;
+        section := section.NextWhile(text.I2, char.IsWhiteSpace);
+      end;
+      
+      Result := section;
+    end;
+    public static function MakeNew(text: StringSection; f: ParsedPasFile): ParsedFileItem := new PFOperatorBlock(text, f);
+    public static mrcd_value := (keywords, new MRCDValue(ValidateKW, MakeNew, nil));
+    
+    protected function FileCleanupBody(is_invalid: MinimizableNode->boolean): StringIndex; override;
+    begin
+      Result := header.Length;
+      Result += line_break1.FileCleanup(is_invalid);
+      Result += FileListCleanup(body, is_invalid);
+      Result += end_string.Length;
+      Result += ApplyFileCleanup(space1, is_invalid);
+      Result += ApplyFileCleanup(end_closer, is_invalid);
+      Result += line_break2.FileCleanup(is_invalid);
+    end;
+    protected procedure AddDirectBodyChildrenTo(l: List<MinimizableNode>); override;
+    begin
+      line_break1.AddDirectChildrenTo(l);
+      l += body;
+      if space1<>nil then l += space1;
+      if end_closer<>nil then l += end_closer;
+      line_break2.AddDirectChildrenTo(l);
+    end;
+    
+    public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
+    begin
+      tw.Write(header.ToString(get_original_text));
+      line_break1.UnWrapTo(tw, need_node);
+      foreach var oper in body.EnmrDirect do
+        if ApplyNeedNode(oper, need_node) then
+          oper.UnWrapTo(tw, need_node);
+      tw.Write(end_string);
+      if ApplyNeedNode(space1, need_node) then
+        space1.UnWrapTo(tw, need_node);
+      if ApplyNeedNode(end_closer, need_node) then
+        end_closer.UnWrapTo(tw, need_node);
+      line_break2.UnWrapTo(tw, need_node);
+    end;
+    
+    public function CountLines(need_node: MinimizableNode->boolean): integer; override;
+    begin
+      Result := 0;
+      Result += line_break1.CountLines(need_node);
+      foreach var oper in body.EnmrDirect do
+        if ApplyNeedNode(oper, need_node) then
+          Result += oper.CountLines(need_node);
+      if ApplyNeedNode(space1, need_node) then
+        Result += space1.CountLines(need_node);
+      if ApplyNeedNode(end_closer, need_node) then
+        Result += end_closer.CountLines(need_node);
+      Result += line_break2.CountLines(need_node);
+    end;
+    
+    protected procedure FillChangedSectionsBody(var skipped: integer; need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>); override;
+    begin
+      skipped += header.Length;
+      line_break1.FillChangedSections(skipped, need_node, deleted, added);
+      foreach var oper in body.EnmrDirect do
+        oper.FillChangedSections(skipped, need_node, deleted, added);
+      skipped += end_string.Length;
+      if space1<>nil then space1.FillChangedSections(skipped, need_node, deleted, added);
+      if end_closer<>nil then end_closer.FillChangedSections(skipped, need_node, deleted, added);
+      line_break2.FillChangedSections(skipped, need_node, deleted, added);
+    end;
+    protected procedure FillIndexAreasBody(var skipped: integer; ind: StringIndex; l: List<SIndexRange>); override;
+    begin
+      if AddIndexArea(skipped, ind, header, l) then exit;
+      if line_break1.FillIndexAreas(skipped, ind, l) then exit;
+      foreach var oper in body.EnmrDirect do
+        if oper.FillIndexAreas(skipped, ind, l) then exit;
+      if AddIndexArea(skipped, ind, end_string, l) then exit;
+      if (space1<>nil) and space1.FillIndexAreas(skipped, ind, l) then exit;
+      if (end_closer<>nil) and end_closer.FillIndexAreas(skipped, ind, l) then exit;
+      if line_break2.FillIndexAreas(skipped, ind, l) then exit;
+    end;
+    
+  end;
+  
   {$endregion Operator}
   
   {$region Method}
+  
+//  PFMethod = sealed class(ParsedFileItem)
+//    
+//  end;
   
   {$endregion Method}
   
@@ -1370,7 +1540,8 @@ type
             exit;
           section := section.NextWhile(text.I2, char.IsWhiteSpace);
           
-          if section.Next(text) <> ';' then exit;
+          // PFTypeBodyDefinition.body_mrcd shouldn't let this happen
+          if section.Next(text) <> ';' then raise new System.InvalidOperationException;
           section.range.i2 += 1;
         end;
         
@@ -1866,6 +2037,7 @@ type
     private static body_mrcd := MidReadCreationDict.Create(make_on_body_item)
       .Add(PFUsesSection.mrcd_value)
       .Add(PFTypeSection.mrcd_value)
+      .Add(PFOperatorBlock.mrcd_value)
     ;
     
     public constructor(text: StringSection; f: ParsedPasFile);
@@ -1955,6 +2127,7 @@ type
       .Add(PFUnitHalf.mrcd_value)
       .Add(PFUsesSection.mrcd_value)
       .Add(PFTypeSection.mrcd_value)
+      .Add(PFOperatorBlock.mrcd_value)
     ;
     
   end;
