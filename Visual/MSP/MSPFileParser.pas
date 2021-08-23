@@ -98,7 +98,7 @@ type
           path.Data := new PathGeometry(|highligher|);
           path.Stroke := new SolidColorBrush(c);
           path.StrokeThickness := 2;
-          path.Fill := new SolidColorBrush(Color.FromArgb(64, c.R,c.G,c.B));
+          path.Fill := new SolidColorBrush(Color.FromArgb(32, c.R,c.G,c.B));
           
           path.IsHitTestVisible := false;
           Result := path;

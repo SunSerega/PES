@@ -159,6 +159,36 @@ type
     public function Next := Next(self.text.Length);
     public function Next(bounds: StringSection) := Next(bounds.I2);
     
+    public function PrevWhile(low_bound_incl: StringIndex; ch_validator: char->boolean; min_expand: StringIndex): StringSection;
+    begin
+      Result := self;
+      var max_i1 := if min_expand.IsInvalid then Result.I1 else Result.I1-min_expand;
+      while true do
+      begin
+        var ch := Result.Prev(low_bound_incl);
+        if ch=nil then break;
+        if not ch_validator(ch.Value) then break;
+        Result.range.i1 -= 1;
+      end;
+      if Result.I1>max_i1 then Result := StringSection.Invalid;
+    end;
+    public function PrevWhile(low_bound_incl: StringIndex; ch_validator: char->boolean) := PrevWhile(low_bound_incl, ch_validator, StringIndex.Invalid);
+    
+    public function NextWhile(upr_bound_n_in: StringIndex; ch_validator: char->boolean; min_expand: StringIndex): StringSection;
+    begin
+      Result := self;
+      var min_i2 := if min_expand.IsInvalid then Result.I2 else Result.I2+min_expand;
+      while true do
+      begin
+        var ch := Result.Next(upr_bound_n_in);
+        if ch=nil then break;
+        if not ch_validator(ch.Value) then break;
+        Result.range.i2 += 1;
+      end;
+      if Result.I2<min_i2 then Result := StringSection.Invalid;
+    end;
+    public function NextWhile(upr_bound_n_in: StringIndex; ch_validator: char->boolean) := NextWhile(upr_bound_n_in, ch_validator, StringIndex.Invalid);
+    
     public function WithI1(i1: StringIndex) := new StringSection(text, i1, i2);
     public function WithI2(i2: StringIndex) := new StringSection(text, i1, i2);
     
@@ -190,6 +220,11 @@ type
       Result := new StringSection(self.text, self.i2-len, self.i2);
     end;
     
+    public function TakeFirstWhile(ch_validator: char->boolean) :=
+    self.TakeFirst(0).NextWhile(self.I2, ch_validator);
+    public function TakeLastWhile(ch_validator: char->boolean) :=
+    self.TakeLast(0).PrevWhile(self.I1, ch_validator);
+    
     public function TrimAfterFirst(ch: char): StringSection;
     begin
       var ind := self.IndexOf(ch);
@@ -211,12 +246,12 @@ type
       Result := new StringSection(self.text, self.i1+ind1, self.i1+ind2);
     end;
     
-    public function IsWhiteSpace: boolean;
+    public function All(ch_validator: char->boolean): boolean;
     begin
       Result := true;
       for var i: integer := i1 to i2-1 do
       begin
-        Result := char.IsWhiteSpace( text[i] );
+        Result := ch_validator( text[i] );
         if not Result then break;
       end;
     end;
@@ -418,6 +453,7 @@ type
     
     public function ToString: string; override :=
     if self.IsInvalid then 'Invalid' else range.ToString(text);
+    public property AsString: string read ToString;
     
   end;
   
@@ -502,27 +538,40 @@ type
     public static function AddIndexArea(var skipped: integer; ind: StringIndex; area_range: SIndexRange; l: List<SIndexRange>) :=
     AddIndexArea(skipped, ind, area_range.Length, l);
     
-    protected function FileCleanupBody(is_invalid: MinimizableNode->boolean): integer; abstract;
+    protected function FileCleanupBody(is_invalid: MinimizableNode->boolean): StringIndex; abstract;
     public function FileCleanup(is_invalid: MinimizableNode->boolean): StringIndex;
     begin
 //      Writeln(f.GetType.GetProperty('PrintableName').GetValue(f));
 //      Writeln(self.GetType, ': ', len);
-      Result := FileCleanupBody(is_invalid);
+      Result := if is_invalid(self) then
+        StringIndex.Invalid else
+        FileCleanupBody(is_invalid);
       self.len := Result;
 //      Writeln(self.GetType, ': ', len);
 //      Writeln('='*30);
     end;
-    public static function FileListCleanup<TNode>(l: MinimizableNodeList<TNode>; is_invalid: MinimizableNode->boolean): integer;
+    public static function FileListCleanup<TNode>(l: MinimizableNodeList<TNode>; is_invalid: MinimizableNode->boolean; len_between: integer := 0): StringIndex;
     where TNode: ParsedFileItem;
     begin
-      var res := 0;
+      var res := -len_between;
       l.RemoveAll(pfi->
       begin
-        var len := pfi.FileCleanup(is_invalid);
-        Result := len.IsInvalid;
-        if not Result then res += len;
+        res += ApplyFileCleanup(pfi, is_invalid);
+        Result := pfi=nil;
+        if not Result then res += len_between;
       end);
-      Result := res;
+      Result := res<0 ? StringIndex.Invalid : res;
+    end;
+    public static function ApplyFileCleanup<TNode>(var item: TNode; is_invalid: MinimizableNode->boolean): integer;
+    where TNode: ParsedFileItem;
+    begin
+      Result := 0;
+      if item=nil then exit;
+      //ToDo #2507
+      var len := (item as ParsedFileItem).FileCleanup(is_invalid);
+      if len.IsInvalid then
+        item := nil else
+        Result := len;
     end;
     ///--
     protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); override :=
@@ -563,17 +612,30 @@ type
     
     public procedure AssertIntegrity;
     begin
-      var sw := new System.IO.StringWriter;
-      self.UnWrapTo(sw, nil);
-      var unwraped := sw.ToString;
-      if original_text <> unwraped then
+      
+      // .UnWrapTo
       begin
-        System.IO.Directory.CreateDirectory('Error');
-        var ext := System.IO.Path.GetExtension(rel_fname);
-        WriteAllText('Error\original'+ext, original_text, write_enc);
-        WriteAllText('Error\unwraped'+ext, unwraped, write_enc);
-        raise new System.InvalidProgramException($'[{self.GetType}] failed on file [{rel_fname}]; Compare result in "Error" folder');
+        var sw := new System.IO.StringWriter;
+        self.UnWrapTo(sw, nil);
+        var unwraped := sw.ToString;
+        if original_text <> unwraped then
+        begin
+          System.IO.Directory.CreateDirectory('Error');
+          var ext := System.IO.Path.GetExtension(rel_fname);
+          WriteAllText('Error\original'+ext, original_text, write_enc);
+          WriteAllText('Error\unwraped'+ext, unwraped, write_enc);
+          raise new System.InvalidProgramException($'[{self.GetType}] failed on file [{rel_fname}]; Compare result in "Error" folder');
+        end;
       end;
+      
+      // .CountLines
+      begin
+        var original_lines := original_text.CountOf(#10)+1;
+        var counted_lines := self.CountLines(nil);
+        if original_lines <> counted_lines then
+          raise new System.InvalidOperationException($'Counted {counted_lines} lines, instead of {original_lines}');
+      end;
+      
     end;
     
     protected procedure FillChangedSectionsBody(need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>); abstract;
