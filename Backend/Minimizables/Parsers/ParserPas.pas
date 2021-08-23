@@ -436,6 +436,8 @@ type
     end;
     private constructor := raise new System.InvalidOperationException;
     
+    protected procedure CommonIncLen(cpi: CommonParsedItem) := IncLen(cpi);
+    
     protected function CommonFileCleanupBody(is_invalid: MinimizableNode->boolean): integer; abstract;
     protected procedure CommonAddDirectChildrenTo(l: List<MinimizableNode>); abstract;
     
@@ -527,12 +529,18 @@ type
   
   {$region MRCD}
   
+  MidReadCreationDict = class;
   MRCDValue = sealed auto class
     public ValidateKW: function(section, whole_text: StringSection): StringSection;
     public MakeNew: function(pretext: JTextBlock; text: StringSection; f: ParsedPasFile): CommonParsedItem;
+    public Vampire: MidReadCreationDict;
   end;
   MidReadCreationDict = sealed class
     private d := new Dictionary<string, MRCDValue>;
+    private make_on_item: MinimizableNode->CommonParsedItem->();
+    
+    public constructor(make_on_item: MinimizableNode->CommonParsedItem->()) := self.make_on_item := make_on_item;
+    private constructor := raise new System.InvalidOperationException;
     
     public function Add(keywords: array of string; val: MRCDValue): MidReadCreationDict;
     begin
@@ -542,55 +550,87 @@ type
     end;
     public function Add(val: (array of string, MRCDValue)) := Add(val[0], val[1]);
     
-    private function ValidateStopper(kw: string; section, text: StringSection) := d[kw].ValidateKW(section, text);
-    
     public function ValidateSection(section, text: StringSection): StringSection;
     begin
       Result := section;
+      var all_mrcds := new Stack<MidReadCreationDict>(|self|);
+      var all_keys_lazy := all_mrcds.SelectMany(mrcd->mrcd.d.Keys).Distinct;
       while true do
       begin
         text := text.WithI1(Result.I2);
         
         var found_stopper_kw := default(string);
         var found_stopper_range := default(SIndexRange);
-        JTextBlock.ValidateNextStopper(text, d.Keys, ValidateStopper, found_stopper_kw, found_stopper_range);
+        JTextBlock.ValidateNextStopper(text, all_keys_lazy, (kw, section, text)->
+        begin
+          var val := default( MRCDValue );
+          while true do
+            if all_mrcds.Peek.d.TryGetValue(kw, val) then
+            begin
+              Result := val.ValidateKW(section, text);
+              break;
+            end else
+            begin
+              all_mrcds.Pop;
+              if all_mrcds.Count=0 then raise new System.InvalidOperationException;
+            end;
+        end, found_stopper_kw, found_stopper_range);
         
         if found_stopper_kw=nil then
         begin
           Result := Result.WithI2(text.I2);
           break;
         end;
-        Result := Result.WithI2(found_stopper_range.i1);
-        
-        if d[found_stopper_kw].MakeNew=nil then break;
         Result := Result.WithI2(found_stopper_range.i2);
+        
+        var vampire := all_mrcds.Peek.d[found_stopper_kw].Vampire;
+        if vampire<>nil then all_mrcds += vampire;
+        
       end;
     end;
     
     public procedure ReadSection(text: StringSection; f: ParsedPasFile; on_item: CommonParsedItem->());
     begin
       var just_text := default(JTextBlock);
+      var all_mrcds := new Stack<(MidReadCreationDict,CommonParsedItem->())>(|(self, on_item)|);
+      var all_keys_lazy := all_mrcds.SelectMany(t->t[0].d.Keys).Distinct;
       while true do
       begin
         var found_stopper_kw := default(string);
         var found_stopper_range := default(SIndexRange);
-        just_text := new JTextBlock(text, f, d.Keys, ValidateStopper, found_stopper_kw, found_stopper_range);
+        just_text := new JTextBlock(text, f, all_keys_lazy, (kw, section, text)->
+        begin
+          var val := default( MRCDValue );
+          while true do
+            if all_mrcds.Peek[0].d.TryGetValue(kw, val) then
+            begin
+              Result := val.ValidateKW(section, text);
+              break;
+            end else
+            begin
+              all_mrcds.Pop;
+              if all_mrcds.Count=0 then raise new System.InvalidOperationException;
+            end;
+        end, found_stopper_kw, found_stopper_range);
         if just_text.parts.IsEmpty then just_text := nil;
         
         if found_stopper_kw=nil then break;
+        var curr_mrcd_val := all_mrcds.Peek[0].d[found_stopper_kw];
         
-        var MakeNew := d[found_stopper_kw].MakeNew;
-        //ToDo #2503
-        var item := MakeNew=nil?nil:MakeNew.Invoke(just_text, new StringSection(text.text, found_stopper_range), f);
+        var item := curr_mrcd_val.MakeNew(just_text, new StringSection(text.text, found_stopper_range), f);
         if item=nil then
           break else
-          on_item( item );
+          all_mrcds.Peek[1]( item );
+        
+        var vampire := curr_mrcd_val.Vampire;
+        if vampire<>nil then all_mrcds += (vampire, vampire.make_on_item(item));
         
         text := text.WithI1(found_stopper_range.i2);
       end;
       if just_text<>nil then
         on_item( new EmptyCommonParsedItem(just_text, f) );
     end;
+    public procedure ReadSection(text: StringSection; f: ParsedPasFile; host: MinimizableNode) := ReadSection(text, f, make_on_item(host));
     
   end;
   
@@ -606,7 +646,11 @@ type
   
   {$region Type}
   
-//  PFTypeSection = sealed class(ParsedFileItem)
+//  PFTypeDefinition = sealed class(CommonParsedItem)
+//    
+//  end;
+//  PFTypeSection = sealed class(CommonParsedItem)
+//    private const type_string = 'type';
 //    
 //  end;
   
@@ -680,7 +724,7 @@ type
       Result := section;
     end;
     public static function MakeNew(pretext: JTextBlock; text: StringSection; f: ParsedPasFile): CommonParsedItem := new PFHeader(pretext, text, f);
-    public static mrcd_value := (keywords, new MRCDValue(ValidateKW, MakeNew));
+    public static mrcd_value := (keywords, new MRCDValue(ValidateKW, MakeNew, nil));
     
     protected function CommonFileCleanupBody(is_invalid: MinimizableNode->boolean): integer; override;
     begin
@@ -725,115 +769,6 @@ type
       if space1.FillIndexAreas(skipped, ind, l) then exit;
       if AddIndexArea(skipped, ind, body, l) then exit;
       if line_break.FillIndexAreas(skipped, ind, l) then exit;
-    end;
-    
-  end;
-  
-  PFUnitHalf = sealed class(CommonParsedItem)
-    private kw: SIndexRange;
-    
-    private line_break: SpacingBlock;
-    private body := new MinimizableNodeList<CommonParsedItem>;
-    private static body_mrcd := MidReadCreationDict.Create;
-    static constructor;
-    begin
-      body_mrcd
-//        .Add(PFTypeSection.mrcd_value)
-        .Add(keywords+|'begin', 'end.'|, new MRCDValue(
-          (section, text)->
-          begin
-            Result := StringSection.Invalid;
-            
-            var prev := section.Prev(text);
-            if (prev<>nil) and not char.IsWhiteSpace(prev.Value) then exit;
-            
-            if not section.EndsWith('.') then
-            begin
-              var next := section.Next(text);
-              if (next=nil) or not char.IsWhiteSpace(next.Value) then exit;
-            end;
-            
-            Result := section.WithI2(text.I2);
-          end,
-          nil
-        ))
-      ;
-    end;
-    
-    public constructor(pretext: JTextBlock; text: StringSection; f: ParsedPasFile);
-    begin
-      inherited Create(pretext, text.Length, f);
-      
-      var ind := text.IndexOf(char.IsWhiteSpace);
-      kw := text.TakeFirst(ind).range;
-      text := text.TrimStart(ind);
-      
-      line_break := SpacingBlock.ReadStart(text, f, #10);
-      
-      body_mrcd.ReadSection(text, f, self.body.Add);
-      
-    end;
-    
-    public static keywords := |'interface', 'implementation'|;
-    public static function ValidateKW(section, text: StringSection): StringSection;
-    begin
-      Result := StringSection.Invalid;
-      
-      var prev := section.Prev(text);
-      if (prev<>nil) and not char.IsWhiteSpace(prev.Value) then exit;
-      
-      var next := section.Next(text);
-      if (next=nil) or not char.IsWhiteSpace(next.Value) then exit;
-      section.range.i2 += 1;
-      
-      Result := body_mrcd.ValidateSection(section, text.WithI1(section.I2));
-    end;
-    public static function MakeNew(pretext: JTextBlock; text: StringSection; f: ParsedPasFile): CommonParsedItem := new PFUnitHalf(pretext, text, f);
-    public static mrcd_value := (keywords, new MRCDValue(ValidateKW, MakeNew));
-    
-    protected function CommonFileCleanupBody(is_invalid: MinimizableNode->boolean): integer; override;
-    begin
-      Result := kw.Length;
-      Result += line_break.FileCleanup(is_invalid);
-      Result += FileListCleanup(body, is_invalid);
-    end;
-    protected procedure CommonAddDirectChildrenTo(l: List<MinimizableNode>); override;
-    begin
-      line_break.AddDirectChildrenTo(l);
-      l += body;
-    end;
-    
-    public procedure CommonUnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
-    begin
-      tw.Write(kw.ToString(get_original_text));
-      line_break.UnWrapTo(tw, need_node);
-      foreach var pfi in body.EnmrDirect do
-        if ApplyNeedNode(pfi, need_node) then
-          pfi.UnWrapTo(tw, need_node);
-    end;
-    
-    public function CommonCountLines(need_node: MinimizableNode->boolean): integer; override;
-    begin
-      Result := line_break.CountLines(need_node);
-      foreach var pfi in body.EnmrDirect do
-        if ApplyNeedNode(pfi, need_node) then
-          Result += pfi.CountLines(need_node);
-    end;
-    
-    protected procedure CommonFillChangedSectionsBody(var skipped: integer; need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>); override;
-    begin
-      skipped += kw.Length;
-      line_break.FillChangedSections(skipped, need_node, deleted, added);
-      foreach var pfi in body.EnmrDirect do
-        pfi.FillChangedSections(skipped, need_node, deleted, added);
-    end;
-    protected procedure CommonFillIndexAreasBody(var skipped: integer; ind: StringIndex; l: List<SIndexRange>); override;
-    begin
-      if AddIndexArea(skipped, ind, kw, l) then exit;
-      if line_break.FillIndexAreas(skipped, ind, l) then exit;
-      foreach var pfi in body.EnmrDirect do
-        if pfi.FillIndexAreas(skipped, ind, l) then
-          exit;
     end;
     
   end;
@@ -1015,7 +950,7 @@ type
       if Result.Next(text) = #10 then Result.range.i2 += 1;
     end;
     public static function MakeNew(pretext: JTextBlock; text: StringSection; f: ParsedPasFile): CommonParsedItem := new PFUsesSection(pretext, text, f);
-    public static mrcd_value := (keywords, new MRCDValue(ValidateKW, MakeNew));
+    public static mrcd_value := (keywords, new MRCDValue(ValidateKW, MakeNew, nil));
     
     protected function CommonFileCleanupBody(is_invalid: MinimizableNode->boolean): integer; override;
     begin
@@ -1067,6 +1002,98 @@ type
     
   end;
   
+  PFUnitHalf = sealed class(CommonParsedItem)
+    private kw: SIndexRange;
+    
+    private line_break: SpacingBlock;
+    private body := new MinimizableNodeList<CommonParsedItem>;
+    private static function make_on_body_item(n: MinimizableNode): CommonParsedItem->();
+    begin
+      var host := PFUnitHalf(n);
+      Result := host.body.Add + host.CommonIncLen;
+    end;
+    private static body_mrcd := MidReadCreationDict.Create(make_on_body_item)
+      .Add(PFUsesSection.mrcd_value)
+//      .Add(PFTypeSection.mrcd_value)
+    ;
+    
+    public constructor(pretext: JTextBlock; text: StringSection; f: ParsedPasFile);
+    begin
+      inherited Create(pretext, text.Length, f);
+      
+      var ind := text.IndexOf(char.IsWhiteSpace);
+      kw := text.TakeFirst(ind).range;
+      text := text.TrimStart(ind);
+      
+      line_break := SpacingBlock.ReadStart(text, f, #10);
+      
+      if text.Length<>0 then raise new System.InvalidOperationException;
+    end;
+    
+    public static keywords := |'interface', 'implementation'|;
+    public static function ValidateKW(section, text: StringSection): StringSection;
+    begin
+      Result := StringSection.Invalid;
+      
+      var prev := section.Prev(text);
+      if (prev<>nil) and not char.IsWhiteSpace(prev.Value) then exit;
+      
+      var next := section.Next(text);
+      if (next=nil) or not char.IsWhiteSpace(next.Value) then exit;
+      section.range.i2 += 1;
+      
+      Result := section;
+    end;
+    public static function MakeNew(pretext: JTextBlock; text: StringSection; f: ParsedPasFile): CommonParsedItem := new PFUnitHalf(pretext, text, f);
+    public static mrcd_value := (keywords, new MRCDValue(ValidateKW, MakeNew, body_mrcd));
+    
+    protected function CommonFileCleanupBody(is_invalid: MinimizableNode->boolean): integer; override;
+    begin
+      Result := kw.Length;
+      Result += line_break.FileCleanup(is_invalid);
+      Result += FileListCleanup(body, is_invalid);
+    end;
+    protected procedure CommonAddDirectChildrenTo(l: List<MinimizableNode>); override;
+    begin
+      line_break.AddDirectChildrenTo(l);
+      l += body;
+    end;
+    
+    public procedure CommonUnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
+    begin
+      tw.Write(kw.ToString(get_original_text));
+      line_break.UnWrapTo(tw, need_node);
+      foreach var pfi in body.EnmrDirect do
+        if ApplyNeedNode(pfi, need_node) then
+          pfi.UnWrapTo(tw, need_node);
+    end;
+    
+    public function CommonCountLines(need_node: MinimizableNode->boolean): integer; override;
+    begin
+      Result := line_break.CountLines(need_node);
+      foreach var pfi in body.EnmrDirect do
+        if ApplyNeedNode(pfi, need_node) then
+          Result += pfi.CountLines(need_node);
+    end;
+    
+    protected procedure CommonFillChangedSectionsBody(var skipped: integer; need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>); override;
+    begin
+      skipped += kw.Length;
+      line_break.FillChangedSections(skipped, need_node, deleted, added);
+      foreach var pfi in body.EnmrDirect do
+        pfi.FillChangedSections(skipped, need_node, deleted, added);
+    end;
+    protected procedure CommonFillIndexAreasBody(var skipped: integer; ind: StringIndex; l: List<SIndexRange>); override;
+    begin
+      if AddIndexArea(skipped, ind, kw, l) then exit;
+      if line_break.FillIndexAreas(skipped, ind, l) then exit;
+      foreach var pfi in body.EnmrDirect do
+        if pfi.FillIndexAreas(skipped, ind, l) then
+          exit;
+    end;
+    
+  end;
+  
   {$endregion FileSections}
   
 {$region ParsedPasFile}
@@ -1075,7 +1102,7 @@ type
   ParsedPasFile = partial sealed class(ParsedFile)
     
     private body := new MinimizableNodeList<CommonParsedItem>;
-    private static whole_file_mrcd := MidReadCreationDict.Create
+    private static body_mrcd := MidReadCreationDict.Create(nil)
       .Add(PFHeader.mrcd_value)
       .Add(PFUnitHalf.mrcd_value)
       .Add(PFUsesSection.mrcd_value)
@@ -1089,7 +1116,7 @@ begin
   inherited Create(fname, base_dir, target);
   var text := new StringSection( self.original_text );
   
-  whole_file_mrcd.ReadSection(text, self, self.body.Add);
+  body_mrcd.ReadSection(text, self, body.Add);
   
 end;
 

@@ -457,6 +457,8 @@ type
     ///--
     public constructor := raise new System.InvalidOperationException;
     
+    protected procedure IncLen(new_item: ParsedFileItem) := self.len += new_item.len;
+    
     public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); abstract;
     public function CountLines(need_node: MinimizableNode->boolean): integer; abstract;
     
