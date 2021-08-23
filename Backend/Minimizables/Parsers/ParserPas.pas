@@ -797,8 +797,8 @@ type
         var prev := section.Prev(text);
         if (prev<>nil) and not char.IsWhiteSpace(prev.Value) then exit;
         
-        var next := section.Next(text);
-        if (next=nil) or not char.IsWhiteSpace(next.Value) and not (next=';') then exit;
+        var next := section.NextWhile(text.I2, char.IsWhiteSpace).Next(text);
+        if (next=nil) or (next<>';') then exit;
         
         Result := section;
       end, nil, nil
@@ -1310,9 +1310,19 @@ type
     begin
       Result := StringSection.Invalid;
       
+//      StringSection.Create(text.text)
+//      .SubSectionOfFirst('PFTypeHeaderDefinition = sealed class(PFAnyTypeDefinition)')
+//      .SubSectionOfFirst('=')
+//      .I1.Println;
+//      halt;
+//      if section.I1 = 25266 then
+//      begin
+//        section := section;
+//      end;
+      
       section := section
         .PrevWhile(text.I1, char.IsWhiteSpace)
-        .PrevWhile(text.I1, CharIsNamePart)
+        .PrevWhile(text.I1, ch->CharIsNamePart(ch) or (ch in '<>'))
       ;
       
       var prev := section.Prev(text);
