@@ -24,7 +24,7 @@ type
     end;
     
     protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); override := exit;
-    public procedure AddDirectBodyChildrenTo(l: List<MinimizableNode>); override := exit;
+    public procedure AddDirectChildrenTo(l: VulnerableNodeList); override := exit;
     
     public procedure UnWrapTo(new_base_dir: string) :=
     CopyFile(
@@ -68,7 +68,7 @@ type
       petrified.Cleanup(is_invalid);
          parsed.Cleanup(is_invalid);
     end;
-    public procedure AddDirectBodyChildrenTo(l: List<MinimizableNode>); override;
+    public procedure AddDirectChildrenTo(l: VulnerableNodeList); override;
     begin
       l += petrified;
       l += parsed;

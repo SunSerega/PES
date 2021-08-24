@@ -10,46 +10,19 @@ type
   
   {$region Node}
   
-  MinimizableNode = abstract class
+  MinimizableNode = abstract partial class
     
     protected invulnerable: boolean;
     //ToDo #2462
     public property IsInvulnerable: boolean read boolean(invulnerable); virtual;
     
     protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); abstract;
-    protected procedure AddDirectBodyChildrenTo(l: List<MinimizableNode>); abstract;
     
     public function Cleanup(is_invalid: MinimizableNode->boolean): boolean;
     begin
       Result := is_invalid(self);
       if Result then exit;
       CleanupBody(is_invalid);
-    end;
-    
-    protected procedure AddDirectChildrenTo(l: List<MinimizableNode>);
-    begin
-//      l += self;
-      AddDirectBodyChildrenTo(l);
-    end;
-    public function GetAllVulnerableNodes: List<MinimizableNode>;
-    begin
-      Result := new List<MinimizableNode>;
-      
-      var prev := new List<MinimizableNode>;
-      prev += self;
-      
-      var curr := new List<MinimizableNode>;
-      while prev.Count<>0 do
-      begin
-        foreach var n in prev do
-          n.AddDirectChildrenTo(curr);
-        foreach var n in curr do
-          if not n.IsInvulnerable then
-            Result += n;
-        Swap(prev, curr);
-        curr.Clear;
-      end;
-      
     end;
     
     public static function ApplyCleanup(item: MinimizableNode; is_invalid: MinimizableNode->boolean) := (item<>nil) and item.Cleanup(is_invalid);
@@ -83,10 +56,92 @@ type
     
   end;
   
+  VulnerableNodeList = sealed partial class(List<MinimizableNode>) end;
+  MinimizableNode = abstract partial class
+    
+    protected procedure AddDirectChildrenTo(l: VulnerableNodeList); abstract;
+    protected procedure AddChildrenTo(l: VulnerableNodeList);
+    begin
+      AddDirectChildrenTo(l);
+      //ToDo #2508
+      if not self.IsInvulnerable then (l as List<MinimizableNode>).Add(self);
+    end;
+    public function GetAllVulnerableChildren: List<MinimizableNode>;
+    begin
+      //ToDo #2508
+      var res := new VulnerableNodeList;
+      AddChildrenTo(res);
+      Result := res;
+    end;
+    
+  end;
+  VulnerableNodeList = sealed partial class(List<MinimizableNode>)
+    
+    public static procedure operator+=<TNode>(l: VulnerableNodeList; n: TNode); where TNode: MinimizableNode;
+    begin
+      //ToDo #2507
+      (n as MinimizableNode).AddChildrenTo(l);
+    end;
+    public static procedure operator+=<TNode>(l: VulnerableNodeList; nl: MinimizableNodeList<TNode>); where TNode: MinimizableNode;
+    begin
+      foreach var n in nl.EnmrDirect do
+        l += n;
+    end;
+    
+  end;
+  
   MinimizableContainer = abstract class(MinimizableNode)
     
     public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); abstract;
     public function CountLines(need_node: MinimizableNode->boolean): integer; abstract;
+    
+  end;
+  
+  MinimizableToken = abstract class(MinimizableNode)
+    private dependants := new HashSet<MinimizableNode>;
+    
+    public static procedure operator+=<TNode>(t: MinimizableToken; n: TNode); where TNode: MinimizableNode;
+    begin
+      t.dependants += MinimizableNode(n);
+    end;
+    public procedure AddDependants(res: HashSet<MinimizableNode>) :=
+    foreach var dep in self.dependants do
+      if res.Add(dep) and (dep is MinimizableToken(var token)) then
+        token.AddDependants(res);
+    
+    protected procedure CleanupBody(is_invalid: MinimizableNode->boolean); override := dependants.RemoveWhere(is_invalid);
+    protected procedure AddDirectChildrenTo(l: VulnerableNodeList); override := exit;
+    
+  end;
+  MinimizableTokenMaker = sealed class
+    
+    private AllTokens := new Dictionary<(System.Type, string), MinimizableToken>;
+    public function Get<TToken>(name: string): TToken; where TToken: MinimizableToken, constructor;
+    begin
+      var cache_key := (typeof(TToken), name);
+      var res: MinimizableToken;
+      if AllTokens.TryGetValue(cache_key, res) then
+        Result := TToken(res) else
+      begin
+        Result := new TToken;
+        AllTokens[cache_key] := Result;
+      end;
+    end;
+    public procedure Remove(name: string; token: MinimizableToken) :=
+    if not AllTokens.Remove((token.GetType, name)) then
+      raise new System.InvalidOperationException;
+    
+    public procedure Cleanup(is_invalid: MinimizableNode->boolean);
+    begin
+      var removed := new List<(System.Type, string)>;
+      foreach var kvp in AllTokens do
+        if kvp.Value.Cleanup(is_invalid) then
+          removed += kvp.Key;
+      foreach var key in removed do
+        AllTokens.Remove(key);
+    end;
+    public procedure AddDirectChildrenTo(l: List<MinimizableNode>) :=
+    l.AddRange(AllTokens.Values.Cast&<MinimizableNode>);
     
   end;
   
@@ -170,6 +225,8 @@ type
     begin
       inherited Create(parent);
       if parent=nil then raise new System.NotSupportedException;
+      foreach var token in removing.OfType&<MinimizableToken>.ToList do
+        token.AddDependants(removing);
       self.rem := removing;
     end;
     ///--
@@ -194,7 +251,7 @@ type
   WildTestInfo = sealed class(RemTestInfo)
     private actually_removed: integer;
     
-    protected constructor(removing: HashSet<MinimizableNode>; actually_removed: integer; parent: TestInfo);
+    public constructor(removing: HashSet<MinimizableNode>; actually_removed: integer; parent: TestInfo);
     begin
       inherited Create(removing, parent);
       self.actually_removed := actually_removed;
@@ -350,7 +407,7 @@ type
     
     public constructor(nc: MinimizableContainer; base_path: string; exec_test: (string, TestInfo)->boolean);
     begin
-      var removable_left := nc.GetAllVulnerableNodes;
+      var removable_left := nc.GetAllVulnerableChildren;
       
       self.c := new InternalMinimizationContext(
         nc,
@@ -369,24 +426,6 @@ type
 implementation
 
 uses ThreadUtils;
-
-procedure operator+=<TNode>(l: List<MinimizableNode>; n: TNode); extensionmethod;
-where TNode: MinimizableNode;
-begin
-  l.Add( n );
-  //ToDo Переразобраться где .Add, а где что
-  // - И удалить что осталось закомменчено
-//  n.AddDirectChildrenTo(l);
-end;
-
-procedure operator+=<TNode>(l: List<MinimizableNode>; nl: MinimizableNodeList<TNode>); extensionmethod;
-where TNode: MinimizableNode;
-begin
-  l.Capacity := l.Capacity.ClampBottom(l.Count+nl.nodes.Count);
-  foreach var n in nl.nodes do
-    l += n;
-//    n.AddDirectChildrenTo(l);
-end;
 
 /// l=кол-во элементов которые убирают
 /// c=кол-во всех элементов
@@ -710,7 +749,7 @@ begin
         begin
           
           foreach var n in curr_removed.ToArray do
-            foreach var sub_n in n.GetAllVulnerableNodes do
+            foreach var sub_n in n.GetAllVulnerableChildren do
               curr_removed += sub_n;
           
           Result := curr_removed;

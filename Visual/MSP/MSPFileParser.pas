@@ -55,7 +55,7 @@ type
           line_break_inds += i;
       line_break_inds += text.Length;
       
-      var corner_w := 2;
+      var corner_w := 1;
       var make_overlay := function(x1,y1, x2,y2: integer; c: Color): UIElement->
       begin
         
@@ -67,10 +67,10 @@ type
           highligher.BorderThickness := new Thickness(2);
           highligher.Background := new SolidColorBrush(Color.FromArgb(64, c.R,c.G,c.B));
           highligher.CornerRadius := new CornerRadius(corner_w);
-          highligher.Width := (x2<x1) or (y2<y1) ? 0 : (x2-x1)*w;
-          highligher.Height := h;
-          Canvas.SetLeft(highligher, x1*w);
-          Canvas.SetTop (highligher, y1*h);
+          highligher.Width := ((x2<x1) or (y2<y1) ? 0 : (x2-x1)*w) + corner_w*2;
+          highligher.Height := h + corner_w*2;
+          Canvas.SetLeft(highligher, x1*w-corner_w);
+          Canvas.SetTop (highligher, y1*h-corner_w);
           
           highligher.IsHitTestVisible := false;
           Result := highligher;
@@ -78,19 +78,19 @@ type
         begin
           var ww := System.Windows.SystemParameters.PrimaryScreenWidth;
           
-          var ToDo := 0; //ToDo ArcSegment's for all corners (except ww)
           var highligher := new PathFigure(
-            new Point(x1*w, (y1+1)*h),
+            new Point(x1*w-corner_w, (y1+1)*h),
             new PathSegment[](
-              new LineSegment(new Point(x1*w, y1*h+corner_w), true),
-              new ArcSegment(new Point(x1*w+corner_w, y1*h), new Size(corner_w, corner_w), 0, false, SweepDirection.Clockwise, true),
-              new LineSegment(new Point(ww, y1*h), true),
-              new LineSegment(new Point(ww, y2*h), true),
-              new LineSegment(new Point(x2*w, y2*h), true),
-              new LineSegment(new Point(x2*w, (y2+1)*h), true),
-              new LineSegment(new Point(0, (y2+1)*h), true),
-              new LineSegment(new Point(0, (y1+1)*h), true),
-              new LineSegment(new Point(x1*w, (y1+1)*h), true)
+              new LineSegment (new Point(x1*w-corner_w, y1*h), true),
+              new ArcSegment  (new Point(x1*w, y1*h-corner_w), new Size(corner_w, corner_w), 0, false, SweepDirection.Clockwise, true),
+              new LineSegment (new Point(ww, y1*h-corner_w), true),
+              new LineSegment (new Point(ww, y2*h), true),
+              new LineSegment (new Point(x2*w+corner_w, y2*h), true),
+              new LineSegment (new Point(x2*w+corner_w, (y2+1)*h), true),
+              new ArcSegment  (new Point(x2*w, (y2+1)*h+corner_w), new Size(corner_w, corner_w), 0, false, SweepDirection.Clockwise, true),
+              new LineSegment (new Point(0, (y2+1)*h+corner_w), true),
+              new ArcSegment  (new Point(0-corner_w, (y2+1)*h), new Size(corner_w, corner_w), 0, false, SweepDirection.Clockwise, true),
+              new LineSegment (new Point(0-corner_w, (y1+1)*h), true)
             ), true
           );
           
@@ -157,7 +157,11 @@ type
       end;
       
       if not first_change_ind.IsInvalid then
-        self.ScrollToVerticalOffset(h*integer(first_change_ind));
+      begin
+        var x := integer(first_change_ind);
+        var y := CalculateTextXY(line_break_inds, x);
+        self.ScrollToVerticalOffset(h*y-5);
+      end;
       {$endregion Changed}
       
       {$region GetIndexAreas}

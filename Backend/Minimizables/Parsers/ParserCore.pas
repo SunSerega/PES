@@ -342,7 +342,7 @@ type
     end;
     
     private static KMP_Cache := new System.Collections.Concurrent.ConcurrentDictionary<string, array of StringIndex>;
-    public function KMP_GetHeader(str: string): array of StringIndex;
+    public static function KMP_GetHeader(str: string): array of StringIndex;
     begin
       if KMP_Cache.TryGetValue(str, Result) then exit;
       
@@ -476,6 +476,28 @@ type
   
   {$endregion Visualization Utils}
   
+  {$region ParseWarning}
+  
+  ParseWarning = class
+    private sect: StringSection;
+    private descr: string;
+    
+    public constructor(sect: StringSection; descr: string);
+    begin
+      self.sect := sect;
+      self.descr := descr;
+    end;
+    
+    public property Section: StringSection read sect;
+    public property Description: string read descr;
+    
+    public function ToString: string; override :=
+    $'{descr}: [{sect}] at {sect.range}';
+    
+  end;
+  
+  {$endregion ParseWarning}
+  
   {$region ParsedFile}
   ParsedFile = class;
   
@@ -483,7 +505,14 @@ type
     protected f: ParsedFile;
     protected len: StringIndex;
     
-    protected function get_original_text: string;
+    protected function GetOriginalText: string;
+    
+    protected function GetToken<T>(name: string): T; where T: MinimizableToken, constructor;
+    protected procedure RemoveToken(name: string; token: MinimizableToken);
+    
+    protected procedure AddWarning(warn: ParseWarning);
+    protected procedure AddWarning(section: StringSection; description: string) :=
+    AddWarning(new ParseWarning(section, description));
     
     public constructor(f: ParsedFile; len: StringIndex);
     begin
@@ -539,7 +568,7 @@ type
     AddIndexArea(skipped, ind, area_range.Length, l);
     
     protected function FileCleanupBody(is_invalid: MinimizableNode->boolean): StringIndex; abstract;
-    public function FileCleanup(is_invalid: MinimizableNode->boolean): StringIndex;
+    public function FileCleanup(is_invalid: MinimizableNode->boolean): StringIndex; virtual; //ToDo Убрать virtual
     begin
 //      Writeln(f.GetType.GetProperty('PrintableName').GetValue(f));
 //      Writeln(self.GetType, ': ', len);
@@ -582,6 +611,8 @@ type
   ParsedFile = abstract class(MinimizableContainer)
     protected rel_fname: string;
     protected original_text: string;
+    protected tokens := new MinimizableTokenMaker;
+    protected warns := new List<ParseWarning>;
     
     public static ParseByExt := new Dictionary<string, function(fname, base_dir, target:string): ParsedFile>;
     
@@ -595,6 +626,7 @@ type
     public constructor := raise new System.InvalidOperationException;
     
     public property PrintableName: string read System.IO.Path.GetFileName(rel_fname);
+    public property Warnings: System.Collections.ObjectModel.ReadOnlyCollection<ParseWarning> read warns.AsReadOnly;
     
     public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); abstract;
     public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); override;
@@ -664,6 +696,11 @@ implementation
 
 uses ParserPas;
 
-function ParsedFileItem.get_original_text := f.original_text;
+function ParsedFileItem.GetOriginalText := f.original_text;
+
+function ParsedFileItem.GetToken<T>(name: string) := f.tokens.Get&<T>(name);
+procedure ParsedFileItem.RemoveToken(name: string; token: MinimizableToken) := f.tokens.Remove(name, token);
+
+procedure ParsedFileItem.AddWarning(warn: ParseWarning) := f.warns.Add(warn);
 
 end.
