@@ -2,6 +2,7 @@
 {$string_nullbased+}
 
 //ToDo Следующее: PFMethod
+// - И тогда уже наконец включить предупреждения в "test visual"
 //ToDo Сохранение информации со стадии валидации?
 //ToDo Визуал предупреждений
 //ToDo Пройтись по всем ToDo
@@ -663,7 +664,9 @@ type
         var need_space1 := not body.IsEmpty;
         if need_space1 then
           section := section.NextWhile(text.I2, char.IsWhiteSpace);
-        section.range.i2 := ValidateT(text.WithI1(section.I2)).I2;
+        var sub_val_range := ValidateT(text.WithI1(section.I2));
+        if sub_val_range.IsInvalid then raise new System.InvalidOperationException(text.ToString);
+        section.range.i2 := sub_val_range.I2;
         if not separator.All(char.IsWhiteSpace) then
           section := section.NextWhile(text.I2, char.IsWhiteSpace);
         body += new PFListValue<T>(need_space1, section, f, MakeT);
@@ -786,6 +789,7 @@ type
   PFTypeName = sealed partial class(ParsedFileItem)
     
     public static function ValidateStart(text: StringSection): StringSection;
+    public static function ValidateEnd(text: StringSection): StringSection;
     public constructor(text: StringSection; f: ParsedPasFile);
     
     public function FileCleanup(is_invalid: MinimizableNode->boolean): StringIndex; override;
@@ -808,6 +812,24 @@ type
     protected function MakeT(text: StringSection; f: ParsedPasFile): PFTypeName; override :=
     new PFTypeName(text, f);
     
+    public static function ValidateWhole(text: StringSection): boolean;
+    begin
+      Result := false;
+      
+      while true do
+      begin
+        text.range.i1 := text.TakeFirstWhile(char.IsWhiteSpace).I2;
+        var type_section := PFTypeName.ValidateStart(text);
+        if type_section.IsInvalid then exit;
+        text := text.WithI1(type_section.I2);
+        text.range.i1 := text.TakeFirstWhile(char.IsWhiteSpace).I2;
+        if text.Length=0 then break;
+        if text[0] <> ',' then exit;
+        text.range.i1 += 1;
+      end;
+      
+      Result := true;
+    end;
     public constructor(text: StringSection; f: ParsedPasFile) :=
     inherited Create(text, f, ',');
     
@@ -1104,10 +1126,10 @@ type
   PFTypeBodyDefinition = sealed class(PFAnyTypeDefinition)
     public static keywords := |'class', 'record', 'interface'|;
     
-    private name: SIndexRange;
+    private name: PFTypeName;
     private space1: SpacingBlock;
     // separator
-    private space2: SpacingBlock;
+    private space2: SpacingBlock; //ToDo может лучше MinimizableNodeList<PFListValue<PFName>>?
     private type_modifiers: PFNameList; // partial, sealed, etc.
     private space3: SpacingBlock; // only if type_modifiers<>nil
     private body_type: PFName; // class, record, etc.
@@ -1125,21 +1147,36 @@ type
     public static body_mrcd := MidReadCreationDict.Create(nil)
 //      .Add(PFMethod.mrcd_value)
     ;
-    static constructor :=
-    body_mrcd.Add(|end_string|, new MRCDValue(
-      (section, text)->
-      begin
-        Result := StringSection.Invalid;
-        
-        var prev := section.Prev(text);
-        if (prev<>nil) and not char.IsWhiteSpace(prev.Value) then exit;
-        
-        var next := section.NextWhile(text.I2, char.IsWhiteSpace).Next(text);
-        if (next=nil) or (next<>';') then exit;
-        
-        Result := section;
-      end, nil, nil
-    ));
+    static constructor := body_mrcd
+      .Add(|'public', 'private', 'protected', 'internal'|, new MRCDValue(
+        (section, text)->
+        begin
+          Result := StringSection.Invalid;
+          
+          var prev := section.Prev(text);
+          if (prev<>nil) and not char.IsWhiteSpace(prev.Value) then exit;
+          
+          var next := section.Next(text);
+          if (next=nil) or not char.IsWhiteSpace(next.Value) then exit;
+          
+          Result := section;
+        end, (text, f)->new PFName(text, f), nil
+      ))
+      .Add(|end_string|, new MRCDValue(
+        (section, text)->
+        begin
+          Result := StringSection.Invalid;
+          
+          var prev := section.Prev(text);
+          if (prev<>nil) and not char.IsWhiteSpace(prev.Value) then exit;
+          
+          var next := section.NextWhile(text.I2, char.IsWhiteSpace).Next(text);
+          if (next=nil) or (next<>';') then exit;
+          
+          Result := section;
+        end, nil, nil
+      ))
+    ;
     
     public constructor(ind: StringIndex; text: StringSection; f: ParsedPasFile);
     begin
@@ -1148,16 +1185,8 @@ type
       var name_section := text.TakeFirst(ind);
       text := text.TrimStart(ind+1);
       
-      ind := name_section.IndexOf(char.IsWhiteSpace);
-      if ind.IsInvalid then
-      begin
-        name := name_section.range;
-        space1 := new SpacingBlock(name_section.TakeLast(0), f);
-      end else
-      begin
-        name := name_section.TakeFirst(ind).range;
-        space1 := new SpacingBlock(name_section.TrimStart(ind), f);
-      end;
+      space1 := SpacingBlock.ReadEnd(name_section, f);
+      name := new PFTypeName(name_section, f);
       
       space2 := SpacingBlock.ReadStart(text, f);
       
@@ -1198,7 +1227,7 @@ type
     
     protected function FileCleanupBody(is_invalid: MinimizableNode->boolean): StringIndex; override;
     begin
-      Result := name.Length;
+      Result := name.FileCleanup(is_invalid);
       Result += space1.FileCleanup(is_invalid);
       Result += 1; // separator
       Result += space2.FileCleanup(is_invalid);
@@ -1237,7 +1266,7 @@ type
     
     public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
     begin
-      tw.Write(name.ToString(GetOriginalText));
+      name.UnWrapTo(tw, need_node);
       space1.UnWrapTo(tw, need_node);
       tw.Write(separator);
       space2.UnWrapTo(tw, need_node);
@@ -1290,7 +1319,7 @@ type
     
     protected procedure FillChangedSectionsBody(var skipped: integer; need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>); override;
     begin
-      skipped += name.Length;
+      name.FillChangedSections(skipped, need_node, deleted, added);
       space1.FillChangedSections(skipped, need_node, deleted, added);
       skipped += 1; // separator
       space2.FillChangedSections(skipped, need_node, deleted, added);
@@ -1318,7 +1347,7 @@ type
     end;
     protected procedure FillIndexAreasBody(var skipped: integer; ind: StringIndex; l: List<SIndexRange>); override;
     begin
-      if AddIndexArea(skipped, ind, name, l) then exit;
+      if name.FillIndexAreas(skipped, ind, l) then exit;
       if space1.FillIndexAreas(skipped, ind, l) then exit;
       if AddIndexArea(skipped, ind, separator, l) then exit;
       if space2.FillIndexAreas(skipped, ind, l) then exit;
@@ -1590,19 +1619,20 @@ type
       Result := StringSection.Invalid;
       
 //      StringSection.Create(text.text)
-//      .SubSectionOfFirst('PFTypeHeaderDefinition = sealed class(PFAnyTypeDefinition)')
+//      .SubSectionOfFirst('PlatformProperties = sealed class(NtvPropertiesBase<cl_platform_id, PlatformInfo>)')
 //      .SubSectionOfFirst('=')
 //      .I1.Println;
 //      halt;
-//      if section.I1 = 25266 then
+//      if section.I1 = 10431 then
 //      begin
 //        section := section;
 //      end;
       
-      section := section
-        .PrevWhile(text.I1, char.IsWhiteSpace)
-        .PrevWhile(text.I1, ch->CharIsNamePart(ch) or (ch in '<>'))
-      ;
+      section := section.PrevWhile(text.I1, char.IsWhiteSpace);
+      
+      var name_section := PFTypeName.ValidateEnd(text.WithI2(section.I1));
+      if name_section.IsInvalid then exit;
+      section.range.i1 := name_section.I1;
       
       var prev := section.Prev(text);
       if (prev<>nil) and not char.IsWhiteSpace(prev.Value) then exit;
@@ -1636,11 +1666,11 @@ type
           
           if next = '(' then
           begin
-            section.range.i2 += 1;
-            var ind := text.WithI1(section.I2).IndexOf(')');
-            if ind.IsInvalid then exit;
-            if not StringSection.Create(text.text, section.I2, section.I2+ind).All(ch->char.IsWhiteSpace(ch) or (ch in '<>,') or CharIsNamePart(ch)) then exit;
-            section.range.i2 += ind+1;
+            var parents_section := text.WithI1(section.I2+1).TrimAfterFirst(')');
+            if parents_section.IsInvalid then exit;
+            section.range.i2 := parents_section.I2;
+            parents_section.range.i2 -= 1;
+            if not PFTypeNameList.ValidateWhole(parents_section) then exit;
           end;
           
           section := PFTypeBodyDefinition.body_mrcd.ValidateSection(section, text);
@@ -2307,11 +2337,30 @@ type
     
   end;
   
+//ToDo Почистить
 static function PFTypeName.ValidateStart(text: StringSection): StringSection;
 begin
   Result := text.TakeFirstWhile(CharIsNamePart);
-  if Result.Length=0 then raise new System.InvalidOperationException(text.ToString);
+  if Result.Length=0 then
+  begin
+    Result := StringSection.Invalid;
+    exit;
+  end;
   var with_space := Result.NextWhile(text.I2, char.IsWhiteSpace);
+  if text.WithI1(with_space.I2).StartsWith('of') then
+  begin
+    with_space.range.i2 += 'of'.Length;
+    with_space := with_space.NextWhile(text.I2, char.IsWhiteSpace);
+    var last_i2 := with_space.I2;
+    with_space := with_space.NextWhile(text.I2, CharIsNamePart);
+    if with_space.I2=last_i2 then
+    begin
+      Result := StringSection.Invalid;
+      exit;
+    end;
+    Result := with_space;
+    with_space := with_space.NextWhile(text.I2, char.IsWhiteSpace);
+  end;
   if with_space.Next(text) = '<' then
   begin
     Result.range.i2 := with_space.I2;
@@ -2319,15 +2368,70 @@ begin
     begin
       Result.range.i2 += 1;
       Result := Result.NextWhile(text.I2, char.IsWhiteSpace);
-      Result.range.i2 := PFTypeName.ValidateStart(text.WithI1(Result.I2)).I2;
+      var sub_type_range := PFTypeName.ValidateStart(text.WithI1(Result.I2));
+      if sub_type_range.IsInvalid then
+      begin
+        Result := StringSection.Invalid;
+        exit;
+      end;
+      Result.range.i2 := sub_type_range.I2;
       Result := Result.NextWhile(text.I2, char.IsWhiteSpace);
       var next := Result.Next(text);
       if next='>' then break;
       if next=',' then continue;
-      raise new System.InvalidOperationException(text.ToString);
+      Result := StringSection.Invalid;
+      exit;
     end;
+    Result.range.i2 += 1; // '>'
   end;
       
+end;
+static function PFTypeName.ValidateEnd(text: StringSection): StringSection;
+begin
+  Result := text.WithI1(text.I2);
+  if Result.Prev(text)='>' then
+  begin
+    while true do
+    begin
+      Result.range.i1 -= 1;
+      Result := Result.PrevWhile(text.I1, char.IsWhiteSpace);
+      var sub_type_range := PFTypeName.ValidateEnd(text.WithI2(Result.I1));
+      if sub_type_range.IsInvalid then
+      begin
+        Result := StringSection.Invalid;
+        exit;
+      end;
+      Result.range.i1 := sub_type_range.I1;
+      Result := Result.PrevWhile(text.I1, char.IsWhiteSpace);
+      var prev := Result.Prev(text);
+      if prev='<' then break;
+      if prev=',' then continue;
+      Result := StringSection.Invalid;
+      exit;
+    end;
+    Result.range.i1 -= 1;
+  end;
+  var last_i1 := Result.I1;
+  Result := Result.PrevWhile(text.I1, CharIsNamePart);
+  if Result.I1 = last_i1 then
+  begin
+    Result := StringSection.Invalid;
+    exit;
+  end;
+  var with_space := text.PrevWhile(text.I1, char.IsWhiteSpace);
+  if text.WithI2(with_space.I1).EndsWith('of') then
+  begin
+    with_space.range.i1 -= 'of'.Length;
+    with_space := with_space.PrevWhile(text.I1, char.IsWhiteSpace);
+    last_i1 := with_space.I1;
+    with_space := with_space.PrevWhile(text.I1, CharIsNamePart);
+    if with_space.I1=last_i1 then
+    begin
+      Result := StringSection.Invalid;
+      exit;
+    end;
+    Result := with_space;
+  end;
 end;
 
 constructor PFTypeName.Create(text: StringSection; f: ParsedPasFile);
@@ -2336,6 +2440,15 @@ begin
   
   var name_section := text.TakeFirstWhile(CharIsNamePart);
   if name_section.Length=0 then raise new System.InvalidOperationException(text.ToString);
+  var with_space := name_section.NextWhile(text.I2, char.IsWhiteSpace);
+  if text.WithI1(with_space.I2).StartsWith('of') then
+  begin
+    with_space.range.i2 += 'of'.Length;
+    with_space := with_space.NextWhile(text.I2, char.IsWhiteSpace);
+    name_section := with_space.WithI1(with_space.I2).NextWhile(text.I2, CharIsNamePart);
+    if name_section.Length=0 then raise new System.InvalidOperationException(text.ToString);
+    name_section.range.i1 := with_space.I1;
+  end;
   text.range.i1 := name_section.I2;
   
   self.name := name_section.ToString;

@@ -7,12 +7,16 @@ try
 //  t.Trim(' ').IndexOf('d').Println;
   
   var fnames := new List<string>;
-  fnames += 'ParserPas.pas';
+//  fnames += 'ParserPas.pas';
 //  fnames += 'C:\0Prog\PES\Bucket\OpenCL.pas';
-//  fnames += 'C:\0Prog\POCGL\Modules.Packed\OpenGL.pas';
+//  fnames += 'C:\0Prog\PES\Bucket\OpenCLABC.pas';
+//  fnames += 'C:\0Prog\PES\Bucket\Internal\OpenCLABCBase.pas';
 //  fnames += 'C:\0Prog\PES\Bucket\MatrMlt.pas';
-//  fnames.AddRange(EnumerateAllFiles('C:\0Prog\PES', '*.pas'));
+//  fnames += 'C:\0Prog\POCGL\Modules.Packed\OpenGL.pas';
+  fnames.AddRange(EnumerateAllFiles('C:\0Prog\PES', '*.pas'));
+//  fnames.AddRange(EnumerateAllFiles('C:\0Prog\PES\Bucket', '*.pas'));
   
+  System.IO.Directory.CreateDirectory('temp');
   foreach var fname in fnames.Select(System.IO.Path.GetFullPath) do loop 2 do
   begin
     fname.Println;
@@ -33,12 +37,13 @@ try
     $'UnWrap: {sw.Elapsed}'.Println;
     
   end;
-  System.IO.Directory.Delete('temp', true);
+  Writeln('='*30);
   
 except
   on e: Exception do
     Writeln(e);
 end;
+System.IO.Directory.Delete('temp', true);
 try
   Console.BufferWidth := Console.BufferWidth;
   Readln;
