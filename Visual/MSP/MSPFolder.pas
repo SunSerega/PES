@@ -20,7 +20,7 @@ type
     
     protected property Description: string read 'File removal'; override;
     
-    public function MakeTestUIElement(_m: MinimizableContainer; need_node: MinimizableNode->boolean): System.Windows.UIElement; override;
+    public function MakeTestUIElement(_m: MinimizableContainer; rti: RemTestInfo): System.Windows.UIElement; override;
     begin
       var ToDo := 0;
       raise new System.NotImplementedException;

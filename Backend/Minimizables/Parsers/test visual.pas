@@ -14,6 +14,7 @@ try
 //  t.Trim(' ').IndexOf('d').Println;
   
 //  var fname := 'ParserPas.pas';
+//  var fname := 'C:\0Prog\PES\Bucket\0.pas';
 //  var fname := 'C:\0Prog\PES\Bucket\OpenCL.pas';
 //  var fname := 'C:\0Prog\PES\Bucket\OpenCLABC.pas';
   var fname := 'C:\0Prog\PES\Bucket\Internal\OpenCLABCBase.pas';

@@ -8,6 +8,7 @@ uses VUtils           in '..\VUtils';
 uses DisplayListData  in '..\DisplayListData';
 uses Counters         in '..\..\Backend\Counters';
 uses MinimizableCore  in '..\..\Backend\MinimizableCore';
+uses Testing          in '..\..\Backend\Testing';
 
 uses MSPCore;
 
@@ -57,6 +58,12 @@ type
     
   end;
   
+  ITestResultApplyable = interface
+    
+    procedure ApplyTestResult(tr: TestResult; res: boolean);
+    
+  end;
+  
   TestInfoContainer = sealed class(ContentControl)
     private const status_w = 5;
     
@@ -89,17 +96,13 @@ type
         tb.HorizontalAlignment  := System.Windows.HorizontalAlignment.Center;
         tb.VerticalAlignment    := System.Windows.VerticalAlignment.Center;
         tb.Text := ti.DisplayName;
-        ti.DisplayNameUpdated += ()->tb.Dispatcher.Invoke(()->
-        begin
-          tb.Text := ti.DisplayName;
-        end);
         
         var status := new System.Windows.Shapes.Rectangle;
         sh.Children.Add(status);
         status.Width := 0;
         status.HorizontalAlignment := System.Windows.HorizontalAlignment.Left;
         
-        if ti is RemTestInfo(var rti) then rti.TestDone += res->status.Dispatcher.Invoke(()->
+        if ti is RemTestInfo(var rti) then rti.TestDone += (tr, res)->status.Dispatcher.Invoke(()->
         begin
           self.test_sucessful := res;
           var TestSucessfulChanged := self.TestSucessfulChanged;
@@ -117,13 +120,50 @@ type
         end);
       end;
       
+      var curr_head: FrameworkElement := b;
+      if ti is RemTestInfo(var rti) then
+      begin
+        var cc := new ClickableContent;
+        cc.Content := curr_head;
+        
+        cc.Click += (o,e)->
+        if e.ChangedButton = System.Windows.Input.MouseButton.Left then
+        begin
+          e.Handled := true;
+          var thr := new System.Threading.Thread(()->
+          try
+            var w := new Window;
+            w.Title := $'{rti.DisplayName}: Testing...';
+            rti.OnTestDone((tr, res)->w.Dispatcher.Invoke(()->(
+              w.Title := if res then
+                $'{rti.DisplayName}: Test Sucess' else
+                $'{rti.DisplayName}: Test Failed'
+            )));
+            w.Content := msp.MakeTestUIElement(m, rti);
+            if w.Content is ITestResultApplyable(var tra) then
+              rti.OnTestDone((tr, res)->w.Dispatcher.Invoke(()->
+                tra.ApplyTestResult(tr, res)
+              ));
+            w.KeyUp += (ko,ke)->if ke.Key = System.Windows.Input.Key.Escape then w.Close;
+            w.Show;
+            System.Windows.Threading.Dispatcher.Run;
+          except
+            on e: Exception do
+              MessageBox.Show(e.ToString);
+          end);
+          thr.ApartmentState := System.Threading.ApartmentState.STA;
+          thr.IsBackground := true;
+          thr.Start;
+        end;
+        
+        curr_head := cc;
+      end;
       if ti is ContainerTestInfo(var cti) then
       begin
         contains_sub_items := true;
         
         var dl := new SimpleDisplayList;
-        self.Content := dl;
-        dl.Header := b;
+        dl.Header := curr_head;
         dl.ItemsShift := 10;
         dl.VerticalAlignment := System.Windows.VerticalAlignment.Top;
         dl.ShowItems := false;
@@ -137,30 +177,9 @@ type
             MessageBox.Show(e.ToString);
         end);
         
-      end else
-      if ti is RemTestInfo(var rti) then
-      begin
-        var cc := new ClickableContent;
-        cc.Content := b;
-        
-        cc.Click += (o,e)->
-        begin
-          var thr := new System.Threading.Thread(()->
-          begin
-            var w := new Window;
-            w.Content := msp.MakeTestUIElement(m, n->not rti.Removing.Contains(n));
-            w.KeyUp += (ko,ke)->if ke.Key = System.Windows.Input.Key.Escape then w.Close;
-            w.Show;
-            System.Windows.Threading.Dispatcher.Run;
-          end);
-          thr.ApartmentState := System.Threading.ApartmentState.STA;
-          thr.IsBackground := true;
-          thr.Start;
-        end;
-        
-        self.Content := cc;
-      end else
-        self.Content := b;
+        curr_head := dl;
+      end;
+      self.Content := curr_head;
       
     end;
     private constructor := raise new System.InvalidOperationException;

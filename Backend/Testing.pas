@@ -1,4 +1,5 @@
 ﻿unit Testing;
+{$zerobasedstrings}
 
 interface
 
@@ -18,10 +19,55 @@ type
     
   end;
   
+  CompOtp = sealed class
+    public org_text: string;
+    
+    public location: (integer, integer) := nil;
+    public fname := default(string);
+    public message := default(string);
+    
+    public constructor(text: string);
+    begin
+      self.org_text := text;
+      var lines := text.Split(|#10|, 2);
+      if (lines.Length=1) or not lines[0].Contains('Compile errors:') then exit;
+      text := lines[1];
+      
+      if text.StartsWith('[') then
+      begin
+        text := text.Substring(1);
+        var ind := text.IndexOf(']', 1);
+        var location_strs := text.Remove(ind).Split(',');
+        var a := location_strs.ConvertAll(s->s.ToInteger);
+        if a.Length<>2 then raise new System.InvalidOperationException;
+        location := (a[0], a[1]);
+        text := text.Substring(ind+1).TrimStart;
+      end;
+      var ind := text.IndexOf(':');
+      if ind<>-1 then
+      begin
+        fname := text.Remove(ind);
+        text := text.SubString(ind+1).TrimStart;
+      end;
+      message := text;
+      
+//      lock output do
+//      begin
+//        Writeln(org_text);
+//        Writeln(location);
+//        Writeln(fname);
+//        Writeln(message);
+//        Writeln('='*30);
+//      end;
+      
+    end;
+    
+  end;
   CompResult = sealed class(TestResult)
     private comp_fname: string;
     
-    private otp, err: string;
+    private otp: CompOtp;
+    private inner_err: string;
     private is_module: boolean;
     
     private procedure Test;
@@ -49,13 +95,13 @@ type
       p.BeginErrorReadLine;
       p.WaitForExit;
       
-      self.err := err.ToString;
-      if string.IsNullOrWhiteSpace(self.err) then
+      var err_text := err.ToString;
+      if string.IsNullOrWhiteSpace(err_text) then
       begin
-        self.otp := otp.ToString.Remove(#13).Trim;
-        self.err := nil;
+        self.otp := new CompOtp(otp.ToString.Remove(#13).Trim);
+        self.inner_err := nil;
       end else
-        self.err := self.err.Remove(#13).Trim;
+        self.inner_err := err_text.Remove(#13).Trim;
       
       var full_fname := System.IO.Path.Combine(dir, target_fname);
       
@@ -113,31 +159,60 @@ type
       any_tr := any_tr.Parent;
     end;
     
-    public function IsError := (err<>nil) or otp.ToLower.Contains('err');
+    public function IsError := (inner_err<>nil) or otp.org_text.ToLower.Contains('err');
     public function IsModule := self.is_module;
     public function ExecTestReasonable := not IsError and not IsModule;
     
     public function GetShortDescription: string; override;
     begin
-      if err<>nil then
+      if inner_err<>nil then
       begin
-        var a := err.Split(#10);
+        var a := inner_err.Split(#10);
         Result := a[0];
       end else
       begin
-        var a := otp.Split(#10);
-        Result := a[0];
-        if Result.Contains('Compile errors:') and (a.Length>1) then
-          Result := a[1];
+        Result := otp.message ?? otp.org_text;
       end;
     end;
     
     public static function AreSame(ctr1, ctr2: CompResult): boolean;
     begin
       Result := false;
-      if ctr1.err <> ctr2.err then exit;
-      if (ctr1.err=nil) and (ctr1.otp <> ctr2.otp) then exit;
+      if (ctr1.inner_err=nil) <> (ctr2.inner_err=nil) then exit;
+      if ctr1.inner_err=nil then
+      begin
+        if (ctr1.otp.message=nil) <> (ctr2.otp.message=nil) then exit;
+        if (ctr1.otp.message??ctr1.otp.org_text) <> (ctr2.otp.message??ctr2.otp.org_text) then exit;
+      end else
+      begin
+        if ctr1.inner_err <> ctr2.inner_err then exit;
+      end;
       Result := true;
+    end;
+    public static function Compare(ctr1, ctr2: CompResult): integer;
+    begin
+      Result := 0;
+      
+      Result += integer(ctr1.inner_err<>nil);
+      Result -= integer(ctr2.inner_err<>nil);
+      if Result<>0 then exit;
+      if ctr1.inner_err<>nil then
+      begin
+        Result := string.Compare(ctr1.inner_err, ctr2.inner_err);
+        exit;
+      end;
+      
+      Result += integer(ctr1.otp.message=nil);
+      Result -= integer(ctr2.otp.message=nil);
+      if Result<>0 then exit;
+      if ctr1.otp.message=nil then
+      begin
+        Result := string.Compare(ctr1.otp.org_text, ctr2.otp.org_text);
+      end else
+      begin
+        Result := string.Compare(ctr1.otp.message, ctr2.otp.message);
+      end;
+      
     end;
     
   end;
@@ -252,6 +327,10 @@ type
         if etr1.err.Message <> etr2.err.Message then exit;
       end;
       Result := true;
+    end;
+    public static function Compare(ctr1, ctr2: ExecResult): integer;
+    begin
+      
     end;
     
   end;

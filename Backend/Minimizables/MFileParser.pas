@@ -74,7 +74,7 @@ type
       l += parsed;
     end;
     
-    public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); override;
+    public function UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean): integer; override;
     begin
       System.IO.Directory.CreateDirectory(new_base_dir);
       foreach var sub_dir in sub_dirs do
@@ -86,7 +86,7 @@ type
       
       foreach var f in parsed.EnmrDirect do
         if (need_node=nil) or need_node(f) then
-          f.UnWrapTo(new_base_dir, need_node);
+          Result += f.UnWrapTo(new_base_dir, need_node);
       
     end;
     

@@ -113,14 +113,14 @@ type
   end;
   
   StringSection = record
-    public text: string := nil;
-    public range: SIndexRange;
+    public text := default(string);
+    public range: SIndexRange := (i1: StringIndex.Invalid; i2: StringIndex.Invalid);
     
     public property I1: StringIndex read range.i1;
     public property I2: StringIndex read range.i2;
     public property Length: integer read range.Length;
     
-    public static property Invalid: StringSection read default(StringSection);
+    public static property Invalid: StringSection read new StringSection;
     public property IsInvalid: boolean read text=nil;
     
     public constructor(text: string; range: SIndexRange);
@@ -130,7 +130,7 @@ type
     end;
     public constructor(text: string; i1, i2: StringIndex) := Create(text, new SIndexRange(i1, i2));
     public constructor(text: string) := Create(text, 0, text.Length);
-    public constructor := raise new System.InvalidOperationException;
+    public constructor := exit;
     
     public procedure ValidateInd(ind: StringIndex) :=
     if (ind >= StringIndex(Length)) then raise new System.IndexOutOfRangeException($'Index {ind} was >= {Length}');
@@ -152,11 +152,9 @@ type
     public function Last := text[i2-1];
     
     public function Prev(low_bound_incl: StringIndex): char? := self.I1>low_bound_incl ? text[I1-1] : nil;
-    public function Prev := Prev(0);
     public function Prev(bounds: StringSection) := Prev(bounds.I1);
     
     public function Next(upr_bound_n_in: StringIndex): char? := self.I2<upr_bound_n_in ? text[I2] : nil;
-    public function Next := Next(self.text.Length);
     public function Next(bounds: StringSection) := Next(bounds.I2);
     
     public function PrevWhile(low_bound_incl: StringIndex; ch_validator: char->boolean; min_expand: StringIndex): StringSection;
@@ -192,22 +190,8 @@ type
     public function WithI1(i1: StringIndex) := new StringSection(text, i1, i2);
     public function WithI2(i2: StringIndex) := new StringSection(text, i1, i2);
     
-    public function TrimStart(chars: string): StringSection;
-    begin
-      Result := self;
-      while (Result.Length<>0) and (Result[0] in chars) do
-        Result.range.i1 += 1;
-    end;
-    public function TrimEnd(chars: string): StringSection;
-    begin
-      Result := self;
-      while (Result.Length<>0) and (Result.Last in chars) do
-        Result.range.i2 -= 1;
-    end;
-    public function Trim(chars: string) := self.TrimStart(chars).TrimEnd(chars);
-    
-    public function TrimStart(i1_shift: StringIndex) := new StringSection(self.text, self.i1+i1_shift, self.i2);
-    public function TrimEnd  (i2_shift: StringIndex) := new StringSection(self.text, self.i1, self.i2-i2_shift);
+    public function TrimFirst(i1_shift: StringIndex) := new StringSection(self.text, self.i1+i1_shift, self.i2);
+    public function TrimLast (i2_shift: StringIndex) := new StringSection(self.text, self.i1, self.i2-i2_shift);
     
     public function TakeFirst(len: StringIndex): StringSection;
     begin
@@ -218,6 +202,27 @@ type
     begin
       ValidateLen(len);
       Result := new StringSection(self.text, self.i2-len, self.i2);
+    end;
+    
+    public function TrimFirstWhile(ch_validator: char->boolean): StringSection;
+    begin
+      Result := self;
+      while true do
+      begin
+        if Result.Length=0 then break;
+        if not ch_validator(Result[0]) then break;
+        Result.range.i1 += 1;
+      end;
+    end;
+    public function TrimLastWhile(ch_validator: char->boolean): StringSection;
+    begin
+      Result := self;
+      while true do
+      begin
+        if Result.Length=0 then break;
+        if not ch_validator(Result.Last) then break;
+        Result.range.i2 -= 1;
+      end;
     end;
     
     public function TakeFirstWhile(ch_validator: char->boolean) :=
@@ -281,6 +286,10 @@ type
     end;
     public static function operator=(str: string; text: StringSection): boolean := text=str;
     
+    public static function operator<>(text1, text2: StringSection) := not (text1=text2);
+    public static function operator<>(text: StringSection; str: string) := not (text=str);
+    public static function operator<>(str: string; text: StringSection) := not (text=str);
+    
     public function StartsWith(str: string): boolean;
     begin
       Result := false;
@@ -314,7 +323,7 @@ type
     end;
     public function IndexOf(from: StringIndex; ch: char): StringIndex;
     begin
-      Result := self.TrimStart(from).IndexOf(ch);
+      Result := self.TrimFirst(from).IndexOf(ch);
       if Result.IsInvalid then exit;
       Result += from;
     end;
@@ -401,7 +410,7 @@ type
     end;
     public function IndexOf(from: StringIndex; str: string): StringIndex;
     begin
-      Result := self.TrimStart(from).IndexOf(str);
+      Result := self.TrimFirst(from).IndexOf(str);
       if Result.IsInvalid then exit;
       Result += from;
     end;
@@ -508,7 +517,6 @@ type
     protected function GetOriginalText: string;
     
     protected function GetToken<T>(name: string): T; where T: MinimizableToken, constructor;
-    protected procedure RemoveToken(name: string; token: MinimizableToken);
     
     protected procedure AddWarning(warn: ParseWarning);
     protected procedure AddWarning(section: StringSection; description: string) :=
@@ -568,7 +576,7 @@ type
     AddIndexArea(skipped, ind, area_range.Length, l);
     
     protected function FileCleanupBody(is_invalid: MinimizableNode->boolean): StringIndex; abstract;
-    public function FileCleanup(is_invalid: MinimizableNode->boolean): StringIndex; virtual; //ToDo Убрать virtual
+    public function FileCleanup(is_invalid: MinimizableNode->boolean): StringIndex;
     begin
 //      Writeln(f.GetType.GetProperty('PrintableName').GetValue(f));
 //      Writeln(self.GetType, ': ', len);
@@ -625,47 +633,88 @@ type
     ///--
     public constructor := raise new System.InvalidOperationException;
     
-    public property PrintableName: string read System.IO.Path.GetFileName(rel_fname);
+    public property PrintableName: string read rel_fname;
     public property Warnings: System.Collections.ObjectModel.ReadOnlyCollection<ParseWarning> read warns.AsReadOnly;
     
     public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); abstract;
-    public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); override;
+    public function UnWrap(need_node: MinimizableNode->boolean): string;
     begin
-      var sw := new System.IO.StreamWriter(
+      var sw := new System.IO.StringWriter;
+      UnWrapTo(sw, need_node);
+      Result := sw.ToString;
+    end;
+    public function UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean): integer; override;
+    begin
+      var text := UnWrap(need_node);
+      Result := text.CountOf(#10)+1;
+      WriteAllText(
         System.IO.Path.Combine(GetFullPath(new_base_dir), self.rel_fname),
-        false, write_enc
+        text, write_enc
       );
-      try
-        UnWrapTo(sw, need_node);
-      finally
-        sw.Close;
-      end;
     end;
     
     public procedure AssertIntegrity;
     begin
       
-      // .UnWrapTo
+      // UnWrap
       begin
-        var sw := new System.IO.StringWriter;
-        self.UnWrapTo(sw, nil);
-        var unwraped := sw.ToString;
-        if original_text <> unwraped then
+        var all_children := self.GetAllVulnerableChildren.ToHashSet;
+        var node_added := function(n: MinimizableNode):boolean -> n in all_children;
+        
+        foreach var need_node in |nil, node_added| do
         begin
-          System.IO.Directory.CreateDirectory('Error');
-          var ext := System.IO.Path.GetExtension(rel_fname);
-          WriteAllText('Error\original'+ext, original_text, write_enc);
-          WriteAllText('Error\unwraped'+ext, unwraped, write_enc);
-          raise new System.InvalidProgramException($'[{self.GetType}] failed on file [{rel_fname}]; Compare result in "Error" folder');
+          var unwraped := UnWrap(need_node);
+          if original_text <> unwraped then
+          begin
+            System.IO.Directory.CreateDirectory('Error');
+            var ext := System.IO.Path.GetExtension(rel_fname);
+            WriteAllText('Error\text1'+ext, original_text, write_enc);
+            WriteAllText('Error\text2'+ext, unwraped, write_enc);
+            var test_name := if need_node=nil then 'UnWrapAll' else 'UnWrapChildren';
+            raise new System.InvalidProgramException($'[{self.GetType}] failed [{test_name}] on file [{rel_fname}]; Compare result in "Error" folder');
+          end;
         end;
+        
       end;
       
-      // .CountLines
+      // CountLines
       begin
         var original_lines := original_text.CountOf(#10)+1;
         var counted_lines := self.CountLines(nil);
         if original_lines <> counted_lines then
           raise new System.InvalidOperationException($'Counted {counted_lines} lines, instead of {original_lines}');
+      end;
+      
+    end;
+    public procedure IntenseAssertIntegrity;
+    begin
+      
+      // UnWrapWitout
+      foreach var test_n in self.GetAllVulnerableChildren.Except(|self as MinimizableNode|) do
+      begin
+//        if not test_n.GetType.ToString.Contains('TypeToken') then continue;
+//        Writeln(test_n.GetType);
+        
+        var rem1 := |test_n|.ToHashSet;
+        foreach var token in rem1.OfType&<MinimizableToken>.ToList do
+          token.AddDependants(rem1);
+        var text1 := UnWrap(n->not (n in rem1));
+        
+        var rem2 := new VulnerableNodeList;
+        foreach var n in rem1 do
+          n.AddChildrenTo(rem2);
+        var text2 := UnWrap(n->not (n in rem2));
+        
+        if text1 <> text2 then
+        begin
+          System.IO.Directory.CreateDirectory('Error');
+          var ext := System.IO.Path.GetExtension(rel_fname);
+          WriteAllText('Error\text1'+ext, text1, write_enc);
+          WriteAllText('Error\text2'+ext, text2, write_enc);
+          var new_node_types := rem2.Except(rem1).Select(n->_ObjectToString(n.GetType));
+          raise new System.InvalidOperationException($'[{self.GetType}] failed [UnWrapWitout] on node [{test_n.GetType}] of file [{rel_fname}]; Compare result in "Error" folder; New nodes:{#10}{new_node_types.JoinToString(#10)}');
+        end;
+        
       end;
       
     end;
@@ -699,7 +748,6 @@ uses ParserPas;
 function ParsedFileItem.GetOriginalText := f.original_text;
 
 function ParsedFileItem.GetToken<T>(name: string) := f.tokens.Get&<T>(name);
-procedure ParsedFileItem.RemoveToken(name: string; token: MinimizableToken) := f.tokens.Remove(name, token);
 
 procedure ParsedFileItem.AddWarning(warn: ParseWarning) := f.warns.Add(warn);
 

@@ -19,6 +19,7 @@ type
   MinimizationStage = sealed class(Border)
     public event StagePartStarted: Action0;
     public event ReportLineCount: integer->();
+    public event ReportNewError: TestResult->();
     
     private stage_num: integer;
     private stage_dir: string;
@@ -85,6 +86,7 @@ type
         self.stage_parts_sp.Children.Add(msp_visual);
         Application.Current.MainWindow.Title := $'PES: Stage={stage_num}, stage_part={msp.GetType.Name}';
       end);
+      msp.ReportNewError += self.ReportNewError;
       msp.StagePartStarted += ()->
       begin
         var StagePartStarted := self.StagePartStarted;
@@ -110,7 +112,9 @@ type
   
   MinimizationLog = sealed class(Border)
     public event ReportLineCount: integer->();
+    public event ReportNewError: TestResult->();
     
+    private thr: System.Threading.Thread;
     public constructor(inital_state_dir: string; expected_tr: TestResult);
     begin
       self.BorderThickness := new Thickness(0,0,1,0);
@@ -131,7 +135,7 @@ type
       var sp := new StackPanel;
       sv.Content := sp;
       
-      System.Threading.Thread.Create(()->
+      self.thr := new System.Threading.Thread(()->
       try
         var i := 1;
         var last_source_dir := inital_state_dir;
@@ -144,7 +148,8 @@ type
           var ms := sp.Dispatcher.Invoke(()->new MinimizationStage(i));
           
           ms.StagePartStarted += ()->sp.Dispatcher.Invoke(()->sp.Children.Add(ms));
-          ms.ReportLineCount += line_count->self.ReportLineCount(line_count);
+          ms.ReportLineCount += self.ReportLineCount;
+          ms.ReportNewError += self.ReportNewError;
           var new_source_dir := ms.Execute(last_source_dir, expected_tr);
           
           Dispatcher.Invoke(()->
@@ -173,10 +178,12 @@ type
           Halt;
 //          break;
         end;
-      end).Start;
+      end);
       
     end;
     private constructor := raise new System.InvalidOperationException;
+    
+    public procedure Start := thr.Start;
     
   end;
   
@@ -368,6 +375,9 @@ type
       var lines_count := 1.0;
 //      var lines_count := CountLines(inital_state_dir);
       
+      var error_list := new List<TestResult>;
+      var NewErrorListItem: TestResult->();
+      
       begin
         var log := new MinimizationLog(inital_state_dir, tr);
         self.Children.Add(log);
@@ -376,6 +386,58 @@ type
         begin
           lines_count := new_line_count;
         end;
+        log.ReportNewError += tr->
+        lock error_list do
+        begin
+          if tr is CompResult(var ctr) then
+          begin
+            foreach var err in error_list.OfType&<CompResult> do
+              if CompResult.AreSame(err, ctr) then
+                exit;
+          end else
+          if tr is ExecResult(var etr) then
+          begin
+            foreach var err in error_list.OfType&<ExecResult> do
+              if ExecResult.AreSame(err, etr) then
+                exit;
+          end else
+            raise new System.NotSupportedException(tr.GetType.ToString);
+          
+          lock error_list do
+          begin
+            error_list += tr;
+            
+            error_list.Sort((tr1, tr2)->
+            begin
+              Result := 0;
+              
+              Result += integer(tr1 is ExecResult(var etr1));
+              Result -= integer(tr2 is ExecResult(var etr2));
+              if Result<>0 then exit;
+              if etr1<>nil then
+              begin
+                Result := ExecResult.Compare(etr1, etr2);
+                exit;
+              end;
+              
+              Result += integer(tr1 is CompResult(var ctr1));
+              Result -= integer(tr2 is CompResult(var ctr2));
+              if Result<>0 then exit;
+              if ctr1<>nil then
+              begin
+                Result := CompResult.Compare(ctr1, ctr2);
+                exit;
+              end;
+              
+              raise new System.NotSupportedException($'{tr1.GetType} ? {tr2.GetType}');
+            end);
+            
+            var NewErrorListItem := NewErrorListItem;
+            if NewErrorListItem<>nil then NewErrorListItem(tr);
+          end;
+          
+        end;
+        log.Start;
       end;
       
       begin
@@ -384,7 +446,61 @@ type
         Grid.SetColumn(graph_dp, 1);
         graph_dp.HorizontalAlignment := System.Windows.HorizontalAlignment.Left;
         
-        var trv := new TestResultViewer(tr, nil);
+        var last_wrong_trs_window: Window;
+        var last_wrong_trs_window_lock := new object;
+        var trv := new TestResultViewer(tr, tr->
+        begin
+          var thr := new System.Threading.Thread(()->
+          try
+            var w := new Window;
+            lock last_wrong_trs_window_lock do
+            begin
+              if last_wrong_trs_window<>nil then
+              begin
+                last_wrong_trs_window.Dispatcher.Invoke(last_wrong_trs_window.Activate);
+                exit;
+              end;
+              last_wrong_trs_window := w;
+            end;
+            w.Closing += (o,e)->lock last_wrong_trs_window_lock do
+            begin
+              last_wrong_trs_window := nil;
+              NewErrorListItem := nil;
+            end;
+            w.Title := 'All wrong test results';
+            
+            var sv := new ScrollViewer;
+            w.Content := sv;
+            sv.VerticalScrollBarVisibility := ScrollBarVisibility.Auto;
+            sv.HorizontalScrollBarVisibility := ScrollBarVisibility.Auto;
+            
+            var sp := new StackPanel;
+            sv.Content := sp;
+            
+            var MakeTRViewer := function(tr: TestResult): TestResultViewer->
+            //ToDo Запускать новый PES для этого результата, а не nil
+            new TestResultViewer(tr, nil);
+            
+            lock error_list do
+            begin
+              foreach var tr in error_list do
+                sp.Children.Add(MakeTRViewer(tr));
+              NewErrorListItem := tr->sp.Dispatcher.Invoke(()->
+                sp.Children.Insert(error_list.IndexOf(tr), MakeTRViewer(tr))
+              );
+            end;
+            
+            w.KeyUp += (ko,ke)->if ke.Key = System.Windows.Input.Key.Escape then w.Close;
+            w.Show;
+            System.Windows.Threading.Dispatcher.Run;
+          except
+            on e: Exception do
+              MessageBox.Show(e.ToString);
+          end);
+          thr.ApartmentState := System.Threading.ApartmentState.STA;
+          thr.IsBackground := true;
+          thr.Start;
+        end);
         graph_dp.Children.Add(trv);
         DockPanel.SetDock(trv, Dock.Bottom);
         trv.Margin := new Thickness(5,0,5,5);

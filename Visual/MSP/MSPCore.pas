@@ -11,6 +11,7 @@ type
   MinimizationStagePart = abstract class
     public event StagePartStarted: Action0;
     public event ReportLineCount: integer->();
+    public event ReportNewError: TestResult->();
     
     protected stage_part_dir: string;
     protected expected_tr: TestResult;
@@ -35,29 +36,29 @@ type
       minimizable.UnWrapTo( System.IO.Path.Combine(stage_part_dir, '0'), nil );
       ReportLineCount(minimizable.CountLines(nil));
       
-      var counter := new MinimizationCounter(minimizable, self.stage_part_dir, (curr_test_dir,ti)->
+      var counter := new MinimizationCounter(minimizable, expected_tr, self.stage_part_dir, (curr_test_dir, ti)->
       begin
+        var final_tr: TestResult;
+        var res: boolean;
         
         var ctr := new CompResult(expected_tr, curr_test_dir);
+        final_tr := ctr;
         if self.expected_tr is CompResult(var expected_ctr) then
-          Result := CompResult.AreSame(ctr, expected_ctr) else
+          res := CompResult.AreSame(ctr, expected_ctr) else
         if ctr.IsError then
-          Result := false else
+          res := false else
         begin
           var etr := new ExecResult(ctr);
+          final_tr := etr;
           if self.expected_tr is ExecResult(var expected_etr) then
-            Result := ExecResult.AreSame(etr, expected_etr) else
+            res := ExecResult.AreSame(etr, expected_etr) else
           begin
             raise new System.NotSupportedException(expected_tr.GetType.ToString);
           end;
         end;
         
-        try
-          System.IO.Directory.Delete(curr_test_dir, true);
-        except
-          on e: Exception do
-            System.Windows.MessageBox.Show(e.ToString);
-        end;
+        if not res then ReportNewError(final_tr);
+        Result := (final_tr, res);
       end);
       
       counter.ReportLineCount += line_count->self.ReportLineCount(line_count);
@@ -69,7 +70,7 @@ type
     end;
     
     public function MakeUIElement: System.Windows.UIElement; abstract;
-    public function MakeTestUIElement(m: MinimizableContainer; need_node: MinimizableNode->boolean): System.Windows.UIElement; abstract;
+    public function MakeTestUIElement(m: MinimizableContainer; rti: RemTestInfo): System.Windows.UIElement; abstract;
     
   end;
   

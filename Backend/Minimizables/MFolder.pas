@@ -65,18 +65,21 @@ type
       l += folders;
     end;
     
-    public procedure UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean); override;
+    public function UnWrapTo(new_base_dir: string; need_node: MinimizableNode->boolean): integer; override;
     begin
       var created_dir := System.IO.Path.Combine(new_base_dir, rel_dir);
       System.IO.Directory.CreateDirectory( created_dir );
       
       foreach var f in files.EnmrDirect do
         if (need_node=nil) or need_node(f) then
+        begin
           f.UnWrapTo(new_base_dir);
+          Result += f.CountLines;
+        end;
       
       foreach var f in folders.EnmrDirect do
         if (need_node=nil) or need_node(f) then
-          f.UnWrapTo(new_base_dir, need_node);
+          Result += f.UnWrapTo(new_base_dir, need_node);
       
     end;
     

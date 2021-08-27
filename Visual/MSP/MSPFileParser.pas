@@ -6,9 +6,11 @@ uses System.Windows.Controls;
 uses System.Windows.Media;
 
 uses VUtils           in '..\VUtils';
+uses Common           in '..\Common';
 
 uses MinimizableCore  in '..\..\Backend\MinimizableCore';
 uses MFileParser      in '..\..\Backend\Minimizables\MFileParser';
+uses Testing          in '..\..\Backend\Testing';
 
 uses MSPStandard;
 
@@ -33,6 +35,8 @@ type
     begin
       if text.Length=0 then exit;
 //      self.Background := Brushes.White;
+      self.VerticalScrollBarVisibility := ScrollBarVisibility.Auto;
+      self.HorizontalScrollBarVisibility := ScrollBarVisibility.Auto;
       
       var sh := new StackedHeap;
       self.Content := sh;
@@ -206,6 +210,78 @@ type
     
   end;
   
+  ParserTestUI = sealed class(TabControl, ITestResultApplyable)
+    private head_sp := new StackPanel;
+    
+    public procedure ApplyTestResult(tr: TestResult; res: boolean);
+    begin
+      
+      var trv := new TestResultViewer(tr, nil);
+      head_sp.Children.Insert(0, trv);
+      trv.BorderThickness := new Thickness(2);
+      trv.BorderBrush := if res then Brushes.DarkGreen else Brushes.DarkRed;
+      
+    end;
+    
+    public constructor(m: MFileBatch; rti: RemTestInfo);
+    begin
+      
+      var LinesRemovedSP := new StackPanel;
+      begin
+        var head_item := new TabItem;
+        self.Items.Add(head_item);
+        head_item.Header := 'Metadata';
+        head_item.Content := head_sp;
+        
+        var tb1 := new TextBlock;
+        head_sp.Children.Add(tb1);
+        tb1.Text := 'Lines removed:';
+        
+        head_sp.Children.Add(LinesRemovedSP);
+        
+        var b1 := new Button;
+        head_sp.Children.Add(b1);
+        b1.Content := 'UnWrap';
+        b1.BorderThickness := new Thickness(1);
+        b1.BorderBrush := Brushes.Black;
+        b1.Click += (o,e)->
+        begin
+          var dir := 1.Step(1).Select(i->$'UnWraped_{i}').SkipWhile(System.IO.Directory.Exists).First;
+          //ToDo Тут и в m.ForEachParsed - m вполне может быть устаревшим, на котором провели .Cleanup следующего слоя
+          m.UnWrapTo(dir, rti.NeedNode);
+          Exec(dir);
+        end;
+        
+      end;
+      
+      m.ForEachParsed(f->
+      begin
+        var sw := new System.IO.StringWriter;
+        f.UnWrapTo(sw, rti.Parent.NeedNode);
+        var text := sw.ToString;
+        
+        //ToDo Сюда и в f.GetIndexAreas надо передавать и rti.Parent.NeedNode, и rti.NeedNode
+        var (deleted, added) := f.GetChangedSections(rti.NeedNode);
+        
+        if deleted.Any or added.Any then
+        begin
+          var tb := new TextBlock;
+          LinesRemovedSP.Children.Add(tb);
+          var c := text.CountOf(#10)+1 - f.CountLines(rti.NeedNode);
+          tb.Text := $'{f.PrintableName}: {c}';
+        end;
+        
+        var file_item := new TabItem;
+        self.Items.Add(file_item);
+        file_item.Header := f.PrintableName;
+        file_item.Content := new CodeChangesWindow(text, deleted, added, f.GetIndexAreas);
+        
+      end);
+      
+    end;
+    
+  end;
+  
   FileParserMSP = sealed class(StandardMSP)
     
     protected function MakeMinimizable(dir, target: string): MinimizableContainer; override :=
@@ -213,28 +289,8 @@ type
     
     protected property Description: string read 'Parsed item removal'; override;
     
-    public function MakeTestUIElement(_m: MinimizableContainer; need_node: MinimizableNode->boolean): System.Windows.UIElement; override;
-    begin
-      var m := MFileBatch(_m);
-      var res := new TabControl;
-      
-      m.ForEachParsed(f->
-      begin
-        var sw := new System.IO.StringWriter;
-        f.UnWrapTo(sw, nil);
-        var text := sw.ToString;
-        
-        var (deleted, added) := f.GetChangedSections(need_node);
-        
-        var tab_item := new TabItem;
-        res.Items.Add(tab_item);
-        tab_item.Header := f.PrintableName;
-        tab_item.Content := new CodeChangesWindow(text, deleted, added, f.GetIndexAreas);
-        
-      end);
-      
-      Result := res;
-    end;
+    public function MakeTestUIElement(m: MinimizableContainer; rti: RemTestInfo): System.Windows.UIElement; override :=
+    new ParserTestUI(MFileBatch(m), rti);
     
   end;
   

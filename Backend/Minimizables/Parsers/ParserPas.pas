@@ -3,9 +3,38 @@
 
 //ToDo Следующее: PFMethod
 // - И тогда уже наконец включить предупреждения в "test visual"
-//ToDo Сохранение информации со стадии валидации?
+//ToDo Выкинуть CountLines - перед ним всегда вызывается .UnWrapTo, поэтому проще посчитать строки в готовом файле
+// - Нет, на самом деле - оно используется для того чтоб посчитать сколько строк будет после CombineTest, не выполняя его
 //ToDo Визуал предупреждений
+//ToDo Токены имени типа и в родителях - сейчас бред творится
+// - T из t1<T> и t2<T> считает одним и тем же типом
+// --- Надо сделать систему локальности токенов типов
+// --- Шаблоны есть не только у типов, но и у методов
 //ToDo Пройтись по всем ToDo
+
+//ToDo Перейти на "GetOriginalText: array of char", чтоб можно было использовать "TextWriter.Write(arr, range.i1, range.i2)"
+//ToDo Переписать на кодогенерацию
+// - MiscTextBlock и SpacingBlock это одно и то же, но с разными параметрами
+// - Сохранение информации со стадии валидации - в отдельном классе
+// - Синтаксис типа:
+// --- space:1 // добавить/удалить пробелы чтоб остался 1
+// --- ?space // возможные пробелы, удалить
+// --- !space:1 // не меньше 1 пробела, удалить остальные
+// --- "abc" // добавить строку "abc", если отсутствует
+// --- ?"abc" // удалить строку "abc", если присутствует
+// --- !"abc" // обязательно должна быть строка "abc"
+// --- !"abc"?"def" // обязательно должна быть или строка "abc", или строка "def"
+// --- GroupName // добавить объект из группы GroupName, если отсутствует
+// --- ?GroupName // удалить объект из группы GroupName, если присутствует
+// --- !GroupName // обязательно должен быть объект из группы GroupName
+// --- [ // начало группы объектов, которую нужно добавить, если отсутствует
+// --- ?[ // начало группы объектов, которую нужно удалить, если присутствует
+// --- ![ // начало группы объектов, которая должна присутствовать
+// --- ![]?[] // одна из групп объектов должна существовать
+// - Если у объекта (как группы ?[], или содержащего её объекта) удалился обязательный объект (к примеру имя типа удалилось по токену) - весь объект надо удалить
+// - Токены?
+// - MinimizableNodeList<> и PFList<>?
+// - Вампиры?
 
 interface
 
@@ -570,8 +599,11 @@ type
   
   {$region Base}
   
+  INeedCheckable = interface
+    function CheckNeed(need_node: MinimizableNode->boolean): boolean;
+  end;
   PFListValue<TVal> = sealed class(ParsedFileItem)
-  where TVal: ParsedFileItem;
+  where TVal: ParsedFileItem, INeedCheckable;
     
     private space1: SpacingBlock;
     private val: TVal;
@@ -589,26 +621,34 @@ type
     
     protected function FileCleanupBody(is_invalid: MinimizableNode->boolean): StringIndex; override;
     begin
+      Result := StringIndex.Invalid;
+      //ToDo #2507
+      var val_len := (val as ParsedFileItem).FileCleanup(is_invalid);
+      if val_len.IsInvalid then exit;
       Result := 0;
       if space1<>nil then
         Result += space1.FileCleanup(is_invalid);
-      //ToDo #2507
-      Result += (val as ParsedFileItem).FileCleanup(is_invalid);
+      Result += val_len;
       Result += ApplyFileCleanup(space2, is_invalid);
     end;
     protected procedure AddDirectChildrenTo(l: VulnerableNodeList); override;
     begin
       if space1<>nil then
         space1.AddDirectChildrenTo(l);
+      l += val;
+//      //ToDo #2507
+//      (val as ParsedFileItem).AddDirectChildrenTo(l);
       if space2<>nil then l += space2;
     end;
     
+    function CheckNeed(need_node: MinimizableNode->boolean) := ApplyNeedNode(val, need_node) and val.CheckNeed(need_node);
     public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
     begin
       if space1<>nil then
         space1.UnWrapTo(tw, need_node);
-      //ToDo #2507
-      (val as ParsedFileItem).UnWrapTo(tw, need_node);
+      if ApplyNeedNode(val, need_node) then
+        //ToDo #2507
+        (val as ParsedFileItem).UnWrapTo(tw, need_node);
       if ApplyNeedNode(space2, need_node) then
         space2.UnWrapTo(tw, need_node);
     end;
@@ -644,7 +684,7 @@ type
   end;
   
   PFList<T> = abstract class(ParsedFileItem)
-  where T: ParsedFileItem;
+  where T: ParsedFileItem, INeedCheckable;
     private pre_space: MiscTextBlock;
     private separator: string;
     private body := new MinimizableNodeList<PFListValue<T>>;
@@ -679,6 +719,8 @@ type
     end;
     
     public function EnmrDirect := body.EnmrDirect.Select(val->val.val);
+    public function CheckNeed(need_node: MinimizableNode->boolean) :=
+    if need_node=nil then not body.IsEmpty else body.EnmrDirect.Any(val->need_node(val) and val.CheckNeed(need_node));
     
     protected function FileCleanupBody(is_invalid: MinimizableNode->boolean): StringIndex; override;
     begin
@@ -695,17 +737,18 @@ type
     
     public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
     begin
-      var needed_vals := body.EnmrDirect.Where(parent->ApplyNeedNode(parent, need_node)).ToList;
+      var needed_vals := body.EnmrDirect.Where(val->ApplyNeedNode(val, need_node)).ToList;
       if needed_vals.Count=0 then exit;
       if ApplyNeedNode(pre_space, need_node) then
         pre_space.UnWrapTo(tw, need_node);
       var non_first := false;
-      foreach var val in needed_vals do
-      begin
-        if non_first then tw.Write(separator);
-        non_first := true;
-        val.UnWrapTo(tw, need_node);
-      end;
+      foreach var val in body.EnmrDirect do
+        if ApplyNeedNode(val, need_node) and val.CheckNeed(need_node) then
+        begin
+          if non_first then tw.Write(separator);
+          non_first := true;
+          val.UnWrapTo(tw, need_node);
+        end;
     end;
     
     public function CountLines(need_node: MinimizableNode->boolean): integer; override;
@@ -750,13 +793,13 @@ type
   
   {$region Name}
   
-  PFName = sealed class(ParsedFileItem)
+  PFName = sealed class(ParsedFileItem, INeedCheckable)
     private name: MiscTextBlock;
     
     public static function ValidateStart(text: StringSection): StringSection;
     begin
       Result := text.TakeFirstWhile(CharIsNamePart);
-      if Result.Length=0 then raise new System.InvalidOperationException(text.ToString);
+      if Result.Length=0 then Result := StringSection.Invalid;
     end;
     public constructor(text: StringSection; f: ParsedPasFile);
     begin
@@ -767,6 +810,7 @@ type
     protected function FileCleanupBody(is_invalid: MinimizableNode->boolean): StringIndex; override := name.range.Length;
     protected procedure AddDirectChildrenTo(l: VulnerableNodeList); override := exit;
     
+    public function INeedCheckable.CheckNeed(need_node: MinimizableNode->boolean): boolean := true;
     public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override := name.UnWrapTo(tw, need_node);
     public function CountLines(need_node: MinimizableNode->boolean): integer; override := name.CountLines(need_node);
     
@@ -786,16 +830,20 @@ type
   
   {$region Type}
   
-  PFTypeName = sealed partial class(ParsedFileItem)
+  TypeGenericToken = sealed class(MinimizableToken) end;
+  TypeToken = sealed class(MinimizableContainerToken) end;
+  
+  PFTypeName = sealed partial class(ParsedFileItem, INeedCheckable)
+    public token: TypeToken;
     
     public static function ValidateStart(text: StringSection): StringSection;
     public static function ValidateEnd(text: StringSection): StringSection;
     public constructor(text: StringSection; f: ParsedPasFile);
     
-    public function FileCleanup(is_invalid: MinimizableNode->boolean): StringIndex; override;
     protected function FileCleanupBody(is_invalid: MinimizableNode->boolean): StringIndex; override;
     protected procedure AddDirectChildrenTo(l: VulnerableNodeList); override;
     
+    public function INeedCheckable.CheckNeed(need_node: MinimizableNode->boolean): boolean := true;
     public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
     public function CountLines(need_node: MinimizableNode->boolean): integer; override;
     
@@ -812,22 +860,33 @@ type
     protected function MakeT(text: StringSection; f: ParsedPasFile): PFTypeName; override :=
     new PFTypeName(text, f);
     
-    public static function ValidateWhole(text: StringSection): boolean;
+    public static function ValidateStart(text: StringSection): StringSection;
     begin
-      Result := false;
+      Result := StringSection.Invalid;
+      var section := text.TakeFirst(0);
       
       while true do
       begin
-        text.range.i1 := text.TakeFirstWhile(char.IsWhiteSpace).I2;
-        var type_section := PFTypeName.ValidateStart(text);
+        section := section.NextWhile(text.I2, char.IsWhiteSpace);
+        
+        var type_section := PFTypeName.ValidateStart(text.WithI1(section.I2));
         if type_section.IsInvalid then exit;
-        text := text.WithI1(type_section.I2);
-        text.range.i1 := text.TakeFirstWhile(char.IsWhiteSpace).I2;
-        if text.Length=0 then break;
-        if text[0] <> ',' then exit;
-        text.range.i1 += 1;
+        section.range.i2 := type_section.I2;
+        
+        section := section.NextWhile(text.I2, char.IsWhiteSpace);
+        
+        if section.Next(text)<>',' then break;
+        section.range.i2 += 1;
       end;
       
+      Result := section;
+    end;
+    public static function ValidateWhole(text: StringSection): boolean;
+    begin
+      Result := false;
+      var section := ValidateStart(text);
+      if section.IsInvalid then exit;
+      if section.I2<>text.I2 then exit;
       Result := true;
     end;
     public constructor(text: StringSection; f: ParsedPasFile) :=
@@ -835,18 +894,201 @@ type
     
   end;
   
-  TypeGenericToken = sealed class(MinimizableToken) end;
-  TypeToken = sealed class(MinimizableToken)
-    public generics := new List<TypeGenericToken>;
+  {$endregion Type}
+  
+  {$region Parameter}
+  
+  ParameterToken = sealed class(MinimizableToken) end;
+  PFParameter = sealed class(ParsedFileItem, INeedCheckable)
+    public token := new ParameterToken;
+    private static modifier_keywords := |'var', 'params'|;
+    
+    private modifier := default(string);
+    private space1: SpacingBlock; // only if modifier
+    
+    private names: PFNameList;
+    private space2: MiscTextBlock;
+    // ':'
+    private space3: SpacingBlock;
+    private t: PFTypeName;
+    
+    public static function ValidateStart(text: StringSection): StringSection;
+    begin
+      Result := StringSection.Invalid;
+      
+      var first_name_section := PFName.ValidateStart(text);
+      if first_name_section.IsInvalid then exit;
+      if modifier_keywords.Any(kw->kw=first_name_section) then
+      begin
+        text.range.i1 := first_name_section.I2;
+        text := text.TrimFirstWhile(char.IsWhiteSpace);
+        first_name_section := PFName.ValidateStart(text);
+        if first_name_section.IsInvalid then exit;
+      end;
+      text.range.i1 := first_name_section.I2;
+      
+      var ind := text.IndexOf(':');
+      if ind.IsInvalid then exit;
+      
+      if not text.TakeFirst(ind).All(ch->CharIsNamePart(ch) or (ch in ', ')) then exit;
+      text.range.i1 += ind+1;
+      
+      text := text.TrimFirstWhile(char.IsWhiteSpace);
+      var type_section := PFTypeName.ValidateStart(text);
+      if type_section.IsInvalid then exit;
+      
+      Result := text.WithI2(type_section.I2);
+    end;
+    public constructor(text: StringSection; f: ParsedPasFile);
+    begin
+      inherited Create(f, text.Length);
+      
+      var ind := text.IndexOf(':');
+      var names_section := text.TakeFirst(ind);
+      text.range.i1 += ind+1;
+      
+      foreach var kw in modifier_keywords do
+        if names_section.StartsWith(kw) then
+        begin
+          modifier := kw;
+          names_section.range.i1 += kw.Length;
+          space1 := SpacingBlock.ReadStart(names_section, f);
+          break;
+        end;
+      
+      space2 := MiscTextBlock.ReadEndSpaces(names_section, f);
+      names := new PFNameList(names_section, f, ',');
+      
+      space3 := SpacingBlock.ReadStart(text, f);
+      t := new PFTypeName(text, f);
+      
+      t.token += self;
+      t.token += self.token;
+    end;
+    
+    protected function FileCleanupBody(is_invalid: MinimizableNode->boolean): StringIndex; override;
+    begin
+      Result := names.FileCleanup(is_invalid);
+      if Result.IsInvalid then exit;
+      if modifier<>nil then
+      begin
+        Result += modifier.Length;
+        Result += space1.FileCleanup(is_invalid);
+      end;
+      Result += ApplyFileCleanup(space2, is_invalid);
+      Result += 1; // ':'
+      Result += space3.FileCleanup(is_invalid);
+      Result += t.FileCleanup(is_invalid);
+    end;
+    protected procedure AddDirectChildrenTo(l: VulnerableNodeList); override;
+    begin
+      if modifier<>nil then
+        space1.AddDirectChildrenTo(l);
+      names.AddDirectChildrenTo(l);
+      if space2<>nil then l += space2;
+      space3.AddDirectChildrenTo(l);
+      t.AddDirectChildrenTo(l);
+    end;
+    
+    public function INeedCheckable.CheckNeed(need_node: MinimizableNode->boolean): boolean := ApplyNeedNode(t?.token, need_node);
+    public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
+    begin
+      if modifier<>nil then
+      begin
+        tw.Write(modifier);
+        space1.UnWrapTo(tw, need_node);
+      end;
+      names.UnWrapTo(tw, need_node);
+      if space2<>nil then space2.UnWrapTo(tw, need_node);
+      tw.Write(':');
+      space3.UnWrapTo(tw, need_node);
+      t.UnWrapTo(tw, need_node);
+    end;
+    public function CountLines(need_node: MinimizableNode->boolean): integer; override;
+    begin
+      Result := 0;
+      if modifier<>nil then
+        Result += space1.CountLines(need_node);
+      Result += names.CountLines(need_node);
+      if space2<>nil then
+        Result += space2.CountLines(need_node);
+      Result += space3.CountLines(need_node);
+      Result += t.CountLines(need_node);
+    end;
+    
+    protected procedure FillChangedSectionsBody(var skipped: integer; need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>); override;
+    begin
+      if modifier<>nil then
+      begin
+        skipped += modifier.Length;
+        space1.FillChangedSections(skipped, need_node, deleted, added);
+      end;
+      names.FillChangedSections(skipped, need_node, deleted, added);
+      if space2<>nil then
+        space2.FillChangedSections(skipped, need_node, deleted, added);
+      skipped += 1; // ':'
+      space3.FillChangedSections(skipped, need_node, deleted, added);
+      t.FillChangedSections(skipped, need_node, deleted, added);
+    end;
+    protected procedure FillIndexAreasBody(var skipped: integer; ind: StringIndex; l: List<SIndexRange>); override;
+    begin
+      if modifier<>nil then
+      begin
+        if AddIndexArea(skipped, ind, modifier, l) then exit;
+        if space1.FillIndexAreas(skipped, ind, l) then exit;
+      end;
+      if names.FillIndexAreas(skipped, ind, l) then exit;
+      if (space2<>nil) and space2.FillIndexAreas(skipped, ind, l) then exit;
+      if AddIndexArea(skipped, ind, ':', l) then exit;
+      if space3.FillIndexAreas(skipped, ind, l) then exit;
+      if t.FillIndexAreas(skipped, ind, l) then exit;
+    end;
+    
   end;
   
-  {$endregion Type}
+  //ToDo Токен каждому параметру, используемый в описании, реализации и вызовах
+  PFParameterList = sealed class(PFList<PFParameter>)
+    
+    protected function ValidateT(text: StringSection): StringSection; override :=
+    PFParameter.ValidateStart(text);
+    
+    protected function MakeT(text: StringSection; f: ParsedPasFile): PFParameter; override :=
+    new PFParameter(text, f);
+    
+    public static function ValidateStart(text: StringSection): StringSection;
+    begin
+      Result := StringSection.Invalid;
+      var section := text.TakeFirst(0);
+      
+      while true do
+      begin
+        section := section.NextWhile(text.I2, char.IsWhiteSpace);
+        
+        var parameter_section := PFParameter.ValidateStart(text.WithI1(section.I2));
+        if parameter_section.IsInvalid then exit;
+        section := section.WithI2(parameter_section.I2);
+        
+        section := section.NextWhile(text.I2, char.IsWhiteSpace);
+        
+        if section.Next(text)<>';' then break;
+        section.range.i2 += 1;
+      end;
+      
+      Result := section;
+    end;
+    public constructor(text: StringSection; f: ParsedPasFile) :=
+    inherited Create(text, f, ';');
+    
+  end;
+  
+  {$endregion Parameter}
   
   {$endregion PFList}
   
   {$region Operator}
   
   PFOperatorBlock = sealed class(ParsedFileItem)
+    public static keywords := |'begin', 'try', 'case', 'match'|;
     
     private header: SIndexRange;
     private line_break1: SpacingBlock;
@@ -911,7 +1153,6 @@ type
       
     end;
     
-    public static keywords := |'begin', 'try', 'case', 'match'|;
     public static function ValidateKW(section, text: StringSection): StringSection;
     begin
       Result := StringSection.Invalid;
@@ -1016,9 +1257,603 @@ type
   
   {$region Method}
   
-//  PFMethod = sealed class(ParsedFileItem)
-//    
-//  end;
+  PFMethodHeaderEndAny = abstract partial class(ParsedFileItem)
+    
+  end;
+  PFMethodHeaderEnd1 = sealed class(PFMethodHeaderEndAny)
+    
+    private space1: SpacingBlock;
+    private const kw = $':=';
+    
+    public constructor(text: StringSection; f: ParsedPasFile);
+    begin
+      inherited Create(f, text.Length);
+      space1 := SpacingBlock.ReadStart(text, f);
+      if text<>kw then raise new System.InvalidOperationException;
+    end;
+    
+    protected function FileCleanupBody(is_invalid: MinimizableNode->boolean): StringIndex; override;
+    begin
+      Result += space1.FileCleanup(is_invalid);
+      Result += kw.Length;
+    end;
+    protected procedure AddDirectChildrenTo(l: VulnerableNodeList); override :=
+    space1.AddDirectChildrenTo(l);
+    
+    public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
+    begin
+      space1.UnWrapTo(tw, need_node);
+      tw.Write(kw);
+    end;
+    public function CountLines(need_node: MinimizableNode->boolean): integer; override :=
+    space1.CountLines(need_node);
+    
+    protected procedure FillChangedSectionsBody(var skipped: integer; need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>); override;
+    begin
+      space1.FillChangedSections(skipped, need_node, deleted, added);
+      skipped += kw.Length;
+    end;
+    protected procedure FillIndexAreasBody(var skipped: integer; ind: StringIndex; l: List<SIndexRange>); override;
+    begin
+      if space1.FillIndexAreas(skipped, ind, l) then exit;
+      if AddIndexArea(skipped, ind, kw, l) then exit;
+    end;
+    
+  end;
+  PFMethodHeaderEnd2 = sealed class(PFMethodHeaderEndAny)
+    
+    private space1: MiscTextBlock;
+    private const kw = $';';
+    
+    public constructor(text: StringSection; f: ParsedPasFile);
+    begin
+      inherited Create(f, text.Length);
+      space1 := MiscTextBlock.ReadStartSpaces(text, f);
+      if text<>kw then raise new System.InvalidOperationException;
+    end;
+    
+    protected function FileCleanupBody(is_invalid: MinimizableNode->boolean): StringIndex; override;
+    begin
+      Result += ApplyFileCleanup(space1, is_invalid);
+      Result += kw.Length;
+    end;
+    protected procedure AddDirectChildrenTo(l: VulnerableNodeList); override :=
+    if space1<>nil then space1.AddDirectChildrenTo(l);
+    
+    public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
+    begin
+      if space1<>nil then space1.UnWrapTo(tw, need_node);
+      tw.Write(kw);
+    end;
+    public function CountLines(need_node: MinimizableNode->boolean): integer; override :=
+    if space1=nil then 0 else space1.CountLines(need_node);
+    
+    protected procedure FillChangedSectionsBody(var skipped: integer; need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>); override;
+    begin
+      if space1<>nil then space1.FillChangedSections(skipped, need_node, deleted, added);
+      skipped += kw.Length;
+    end;
+    protected procedure FillIndexAreasBody(var skipped: integer; ind: StringIndex; l: List<SIndexRange>); override;
+    begin
+      if (space1<>nil) and space1.FillIndexAreas(skipped, ind, l) then exit;
+      if AddIndexArea(skipped, ind, kw, l) then exit;
+    end;
+    
+  end;
+  PFMethodHeaderEndAny = abstract partial class(ParsedFileItem)
+    private static all_keywords := |PFMethodHeaderEnd1.kw, PFMethodHeaderEnd2.kw|;
+    
+    public static function ValidateStart(text: StringSection): StringSection;
+    begin
+      Result := text.TakeFirstWhile(char.IsWhiteSpace);
+      
+      text := text.WithI1(Result.I2);
+      foreach var kw in all_keywords do
+        if text.StartsWith(kw) then
+        begin
+          Result.range.i2 += kw.Length;
+          exit;
+        end;
+      
+      Result := StringSection.Invalid;
+    end;
+    public static function MakeNew(text: StringSection; f: ParsedPasFile): PFMethodHeaderEndAny;
+    begin
+      case text.TrimFirstWhile(char.IsWhiteSpace).ToString of
+        PFMethodHeaderEnd1.kw: Result := new PFMethodHeaderEnd1(text, f);
+        PFMethodHeaderEnd2.kw: Result := new PFMethodHeaderEnd2(text, f);
+        else raise new System.InvalidOperationException($'[{text}]');
+      end;
+    end;
+    
+  end;
+  
+  MethodToken = sealed class(MinimizableToken) end;
+  PFMethod = sealed class(ParsedFileItem)
+    private static keywords := |'procedure', 'function', 'constructor', 'destructor'|;
+    private static static_strings := |'static', 'class'|;
+    
+    private static_kw := default(string);
+    private space1: SpacingBlock; // only if is_static
+    
+    private kw: SIndexRange;
+    private space2: SpacingBlock; // if not name.StartsWith('.')
+    
+    private source_type: PFTypeName;
+    private space3: MiscTextBlock;
+    // '.'
+    private space4: MiscTextBlock;
+    
+    private name: string; private token: MethodToken;
+    
+    private space5: MiscTextBlock;
+    // '<'
+    private generics: PFTypeNameList;
+    // '>'
+    
+    private space6: MiscTextBlock;
+    // '('
+    private parameters: PFParameterList;
+    // ')'
+    
+    private space7: MiscTextBlock;
+    // ':'
+    private space8: SpacingBlock;
+    private ret_type: PFTypeName;
+    
+    private header_end: PFMethodHeaderEndAny;
+    
+    private line_break: SpacingBlock;
+    private body := new MinimizableNodeList<ParsedFileItem>;
+    
+    private static function make_on_body_item(n: MinimizableNode): ParsedFileItem->();
+    begin
+      var host := PFMethod(n);
+      Result := host.body.Add;
+    end;
+    private static body_mrcd := MidReadCreationDict.Create(make_on_body_item)
+      .Add(PFOperatorBlock.mrcd_value)
+    ;
+    
+    public constructor(text: StringSection; f: ParsedPasFile);
+    begin
+      inherited Create(f, text.Length);
+      
+//      if text.I1 = 39139 then
+//      begin
+//        text := text;
+//      end;
+      
+      static_kw := static_strings.FirstOrDefault(text.StartsWith);
+      if static_kw<>nil then
+      begin
+        text.range.i1 += static_kw.Length;
+        space1 := SpacingBlock.ReadStart(text, f);
+      end;
+      
+      var kw_section := text.TakeFirstWhile(CharIsNamePart);
+      var is_constructor := kw_section='constructor';
+      kw := kw_section.range;
+      text.range.i1 := kw.i2;
+      space2 := SpacingBlock.ReadStart(text, f);
+      
+      var name_section := PFTypeName.ValidateStart(text);
+      if name_section.IsInvalid then
+      begin
+        if not is_constructor then raise new System.InvalidOperationException;
+        name := '.ctor';
+        text.range.i1 := kw.i2;
+        space2 := nil;
+      end else
+      begin
+        
+        if name_section.NextWhile(text.I2, char.IsWhiteSpace).Next(text) = '.' then
+        begin
+          self.source_type := new PFTypeName(name_section, f);
+          text.range.i1 := name_section.I2;
+          space3 := MiscTextBlock.ReadStartSpaces(text, f);
+          if space3<>nil then source_type.token += space3;
+          
+          if not text.StartsWith('.') then raise new System.InvalidOperationException;
+          text.range.i1 += 1;
+          
+          space4 := MiscTextBlock.ReadStartSpaces(text, f);
+          if space4<>nil then source_type.token += space4;
+          
+          name_section := text.TakeFirstWhile(CharIsNamePart);
+        end;
+        
+        name := name_section.ToString;
+        text.range.i1 := name_section.I2;
+      end;
+      
+      token := if source_type=nil then
+        inherited GetToken&<MethodToken>(name) else
+        source_type.token.GetToken&<MethodToken>(name);
+      token += self;
+      
+      if text.TrimFirstWhile(char.IsWhiteSpace).StartsWith('<') then
+      begin
+        space5 := MiscTextBlock.ReadStartSpaces(text, f);
+        text.range.i1 += 1;
+        var generics_section := PFTypeNameList.ValidateStart(text);
+        if generics_section.IsInvalid then raise new System.InvalidOperationException;
+        generics := new PFTypeNameList(generics_section, f);
+        text.range.i1 := generics_section.I2;
+        if not text.StartsWith('>') then raise new System.InvalidOperationException;
+        text.range.i1 += 1;
+      end;
+      
+      if text.TrimFirstWhile(char.IsWhiteSpace).StartsWith('(') then
+      begin
+        space6 := MiscTextBlock.ReadStartSpaces(text, f);
+        text.range.i1 += 1;
+        var parameters_section := PFParameterList.ValidateStart(text);
+        if parameters_section.IsInvalid then raise new System.InvalidOperationException;
+        parameters := new PFParameterList(parameters_section, f);
+        text.range.i1 := parameters_section.I2;
+        if not text.StartsWith(')') then raise new System.InvalidOperationException;
+        text.range.i1 += 1;
+      end;
+      
+      if (kw_section='function') and not text.TrimFirstWhile(char.IsWhiteSpace).StartsWith(':=') then
+      begin
+        space7 := MiscTextBlock.ReadStartSpaces(text, f);
+        if not text.StartsWith(':') then raise new System.InvalidOperationException;
+        text.range.i1 += 1;
+        space8 := SpacingBlock.ReadStart(text, f);
+        var ret_type_section := PFTypeName.ValidateStart(text);
+        ret_type := new PFTypeName(ret_type_section, f);
+        ret_type.token += self;
+        text.range.i1 := ret_type_section.I2;
+      end;
+      
+      line_break := SpacingBlock.ReadEnd(text, f, #10);
+      header_end := PFMethodHeaderEndAny.MakeNew(text, f);
+      
+    end;
+    
+    public static function ValidateKW(section, text: StringSection): StringSection;
+    begin
+      Result := StringSection.Invalid;
+      
+//      StringSection.Create(text.text)
+//      .SubSectionOfFirst('function GetSize(id: TInfo): UIntPtr;')
+//      .SubSectionOfFirst('function')
+//      .I1.Println;
+//      halt;
+//      if section.I1 = 7517 then
+//      begin
+//        section := section;
+//      end;
+      
+      var prev := section.Prev(text);
+      if (prev<>nil) and not char.IsWhiteSpace(prev.Value) then exit;
+      
+      var static_section := text.WithI2(section.I1).TrimLastWhile(char.IsWhiteSpace).TakeLastWhile(CharIsNamePart);
+      if (static_section.Length<>0) and static_strings.Any(s->s=static_section) then
+        section.range.i1 := static_section.I1;
+      
+      var kw_section := section;
+      var is_constructor := kw_section='constructor';
+      
+      section := section.NextWhile(text.I2, char.IsWhiteSpace, if is_constructor then 0 else 1);
+      if section.IsInvalid then exit;
+      
+      var name_section := PFTypeName.ValidateStart(text.WithI1(section.I2));
+      if not name_section.IsInvalid then
+      begin
+        section.range.i2 := name_section.I2;
+        section := section.NextWhile(text.I2, char.IsWhiteSpace);
+        
+        if section.Next(text) = '.' then
+        begin
+          section.range.i2 += 1;
+          section := section.NextWhile(text.I2, char.IsWhiteSpace);
+          name_section := PFTypeName.ValidateStart(text.WithI1(section.I2));
+          if name_section.IsInvalid then exit;
+          section.range.i2 := name_section.I2;
+          section := section.NextWhile(text.I2, char.IsWhiteSpace);
+        end;
+        
+      end else
+      if not is_constructor then
+        exit;
+      
+      if section.Next(text) = '(' then
+      begin
+        section.range.i2 += 1;
+        var parameters_section := PFParameterList.ValidateStart(text.WithI1(section.I2));
+        if parameters_section.IsInvalid then exit;
+        section.range.i2 := parameters_section.I2;
+        if section.Next(text) <> ')' then exit;
+        section.range.i2 += 1;
+        section := section.NextWhile(text.I2, char.IsWhiteSpace);
+      end;
+      
+      if (kw_section='function') and not text.WithI1(section.I2).TrimFirstWhile(char.IsWhiteSpace).StartsWith(':=') then
+      begin
+        section := section.NextWhile(text.I2, char.IsWhiteSpace);
+        if section.Next(text) <> ':' then exit;
+        section.range.i2 += 1;
+        section := section.NextWhile(text.I2, char.IsWhiteSpace);
+        var ret_type_section := PFTypeName.ValidateStart(text.WithI1(section.I2));
+        if ret_type_section.IsInvalid then exit;
+        section.range.i2 := ret_type_section.I2;
+      end;
+      
+      var header_end_section := PFMethodHeaderEndAny.ValidateStart(text.WithI1(section.I2));
+      if header_end_section.IsInvalid then exit;
+      section.range.i2 := header_end_section.I2;
+      section := section.NextWhile(text.I2, char.IsWhiteSpace);
+      
+      Result := section;
+    end;
+    public static function MakeNew(text: StringSection; f: ParsedPasFile): ParsedFileItem := new PFMethod(text, f);
+    public static mrcd_value := (keywords, new MRCDValue(ValidateKW, MakeNew, body_mrcd));
+    
+    protected function FileCleanupBody(is_invalid: MinimizableNode->boolean): StringIndex; override;
+    begin
+      if static_kw<>nil then
+      begin
+        Result += static_kw.Length;
+        Result += space1.FileCleanup(is_invalid);
+      end;
+      Result += kw.Length;
+      if not name.StartsWith('.') then
+      begin
+        Result += space2.FileCleanup(is_invalid);
+        if source_type<>nil then
+        begin
+          Result += source_type.FileCleanup(is_invalid);
+          Result += ApplyFileCleanup(space3, is_invalid);
+          Result += 1; // '.'
+          Result += ApplyFileCleanup(space4, is_invalid);
+        end;
+        Result += name.Length;
+        var generics_len := ApplyFileCleanup(generics, is_invalid);
+        if generics<>nil then
+        begin
+          Result += ApplyFileCleanup(space5, is_invalid);
+          Result += 1; // '<'
+          Result += generics_len;
+          Result += 1; // '>'
+        end;
+      end;
+      var parameters_len := ApplyFileCleanup(parameters, is_invalid);
+      if parameters<>nil then
+      begin
+        Result += ApplyFileCleanup(space6, is_invalid);
+        Result += 1; // '('
+        Result += parameters_len;
+        Result += 1; // ')'
+      end;
+      if ret_type<>nil then
+      begin
+        Result += ApplyFileCleanup(space7, is_invalid);
+        Result += 1; // ':'
+        Result += space8.FileCleanup(is_invalid);
+        Result += ret_type.FileCleanup(is_invalid);
+      end;
+      Result += header_end.FileCleanup(is_invalid);
+      Result += line_break.FileCleanup(is_invalid);
+      Result += FileListCleanup(body, is_invalid);
+    end;
+    protected procedure AddDirectChildrenTo(l: VulnerableNodeList); override;
+    begin
+      if static_kw<>nil then
+        space1.AddDirectChildrenTo(l);
+      if not name.StartsWith('.') then
+      begin
+        space2.AddDirectChildrenTo(l);
+        if source_type<>nil then
+        begin
+          source_type.AddDirectChildrenTo(l);
+          if space3<>nil then l += space3;
+          if space4<>nil then l += space4;
+        end;
+        if generics<>nil then
+        begin
+          if space5<>nil then l += space5;
+          generics.AddDirectChildrenTo(l);
+        end;
+      end;
+      if parameters<>nil then
+      begin
+        if space6<>nil then l += space6;
+        parameters.AddDirectChildrenTo(l);
+      end;
+      if ret_type<>nil then
+      begin
+        if space7<>nil then l += space7;
+        space8.AddDirectChildrenTo(l);
+        ret_type.AddDirectChildrenTo(l);
+      end;
+      header_end.AddDirectChildrenTo(l);
+      line_break.AddDirectChildrenTo(l);
+      foreach var pfi in body.EnmrDirect do
+        l += pfi;
+    end;
+    
+    public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
+    begin
+      if static_kw<>nil then
+      begin
+        tw.Write(static_kw);
+        space1.UnWrapTo(tw, need_node);
+      end;
+      tw.Write(kw.ToString(GetOriginalText));
+      if not name.StartsWith('.') then
+      begin
+        space2.UnWrapTo(tw, need_node);
+        if source_type<>nil then
+        begin
+          source_type.UnWrapTo(tw, need_node);
+          if ApplyNeedNode(space3, need_node) then space3.UnWrapTo(tw, need_node);
+          tw.Write('.');
+          if ApplyNeedNode(space4, need_node) then space4.UnWrapTo(tw, need_node);
+        end;
+        tw.Write(name);
+        if (generics<>nil) and generics.CheckNeed(need_node) then
+        begin
+          if ApplyNeedNode(space5, need_node) then space5.UnWrapTo(tw, need_node);
+          tw.Write('<');
+          generics.UnWrapTo(tw, need_node);
+          tw.Write('>');
+        end;
+      end;
+      if (parameters<>nil) and parameters.CheckNeed(need_node) then
+      begin
+        if ApplyNeedNode(space6, need_node) then space6.UnWrapTo(tw, need_node);
+        tw.Write('(');
+        parameters.UnWrapTo(tw, need_node);
+        tw.Write(')');
+      end;
+      if ret_type<>nil then
+      begin
+        if ApplyNeedNode(space7, need_node) then space7.UnWrapTo(tw, need_node);
+        tw.Write(':');
+        space8.UnWrapTo(tw, need_node);
+        ret_type.UnWrapTo(tw, need_node);
+      end;
+      header_end.UnWrapTo(tw, need_node);
+      line_break.UnWrapTo(tw, need_node);
+      foreach var pfi in body.EnmrDirect do
+        if ApplyNeedNode(pfi, need_node) then
+          pfi.UnWrapTo(tw, need_node);
+    end;
+    public function CountLines(need_node: MinimizableNode->boolean): integer; override;
+    begin
+      Result := 0;
+      if static_kw<>nil then
+        Result += space1.CountLines(need_node);
+      if not name.StartsWith('.') then
+      begin
+        Result += space2.CountLines(need_node);
+        if ApplyNeedNode(source_type, need_node) then
+        begin
+          Result += source_type.CountLines(need_node);
+          if ApplyNeedNode(space3, need_node) then Result += space3.CountLines(need_node);
+          if ApplyNeedNode(space4, need_node) then Result += space4.CountLines(need_node);
+        end;
+        if ApplyNeedNode(generics, need_node) and generics.CheckNeed(need_node) then
+        begin
+          if ApplyNeedNode(space5, need_node) then Result += space5.CountLines(need_node);
+          Result += generics.CountLines(need_node);
+        end;
+      end;
+      if ApplyNeedNode(parameters, need_node) and parameters.CheckNeed(need_node) then
+      begin
+        if ApplyNeedNode(space6, need_node) then Result += space6.CountLines(need_node);
+        Result += parameters.CountLines(need_node);
+      end;
+      if ret_type<>nil then
+      begin
+        if ApplyNeedNode(space7, need_node) then Result += space7.CountLines(need_node);
+        Result += space8.CountLines(need_node);
+        Result += ret_type.CountLines(need_node);
+      end;
+      Result += header_end.CountLines(need_node);
+      Result += line_break.CountLines(need_node);
+      foreach var pfi in body.EnmrDirect do
+        if ApplyNeedNode(pfi, need_node) then
+          Result += pfi.CountLines(need_node);
+    end;
+    
+    protected procedure FillChangedSectionsBody(var skipped: integer; need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>); override;
+    begin
+      if static_kw<>nil then
+      begin
+        skipped += static_kw.Length;
+        space1.FillChangedSections(skipped, need_node, deleted, added);
+      end;
+      skipped += kw.Length;
+      if not name.StartsWith('.') then
+      begin
+        space2.FillChangedSections(skipped, need_node, deleted, added);
+        if source_type<>nil then
+        begin
+          source_type.FillChangedSections(skipped, need_node, deleted, added);
+          if (space3<>nil) then space3.FillChangedSections(skipped, need_node, deleted, added);
+          skipped += 1; // '.'
+          if (space4<>nil) then space4.FillChangedSections(skipped, need_node, deleted, added);
+        end;
+        skipped += name.Length;
+        if generics<>nil then
+        begin
+          if (space5<>nil) then space5.FillChangedSections(skipped, need_node, deleted, added);
+          skipped += 1; // '<'
+          generics.FillChangedSections(skipped, need_node, deleted, added);
+          skipped += 1; // '>'
+        end;
+      end;
+      if parameters<>nil then
+      begin
+        if (space6<>nil) then space6.FillChangedSections(skipped, need_node, deleted, added);
+        skipped += 1; // '('
+        parameters.FillChangedSections(skipped, need_node, deleted, added);
+        skipped += 1; // ')'
+      end;
+      if ret_type<>nil then
+      begin
+        if space7<>nil then space7.FillChangedSections(skipped, need_node, deleted, added);
+        skipped += 1; // ':'
+        space8.FillChangedSections(skipped, need_node, deleted, added);
+        ret_type.FillChangedSections(skipped, need_node, deleted, added);
+      end;
+      header_end.FillChangedSections(skipped, need_node, deleted, added);
+      line_break.FillChangedSections(skipped, need_node, deleted, added);
+      foreach var pfi in body.EnmrDirect do
+        pfi.FillChangedSections(skipped, need_node, deleted, added);
+    end;
+    protected procedure FillIndexAreasBody(var skipped: integer; ind: StringIndex; l: List<SIndexRange>); override;
+    begin
+      if static_kw<>nil then
+      begin
+        if AddIndexArea(skipped, ind, static_kw, l) then exit;
+        if space1.FillIndexAreas(skipped, ind, l) then exit;
+      end;
+      if AddIndexArea(skipped, ind, kw, l) then exit;
+      if not name.StartsWith('.') then
+      begin
+        if space2.FillIndexAreas(skipped, ind, l) then exit;
+        if source_type<>nil then
+        begin
+          if source_type.FillIndexAreas(skipped, ind, l) then exit;
+          if (space3<>nil) and space3.FillIndexAreas(skipped, ind, l) then exit;
+          if AddIndexArea(skipped, ind, '.', l) then exit;
+          if (space4<>nil) and space4.FillIndexAreas(skipped, ind, l) then exit;
+        end;
+        if AddIndexArea(skipped, ind, name, l) then exit;
+        if generics<>nil then
+        begin
+          if (space5<>nil) and space5.FillIndexAreas(skipped, ind, l) then exit;
+          if AddIndexArea(skipped, ind, '<', l) then exit;
+          if generics.FillIndexAreas(skipped, ind, l) then exit;
+          if AddIndexArea(skipped, ind, '>', l) then exit;
+        end;
+      end;
+      if parameters<>nil then
+      begin
+        if (space6<>nil) and space6.FillIndexAreas(skipped, ind, l) then exit;
+        if AddIndexArea(skipped, ind, '(', l) then exit;
+        if parameters.FillIndexAreas(skipped, ind, l) then exit;
+        if AddIndexArea(skipped, ind, ')', l) then exit;
+      end;
+      if ret_type<>nil then
+      begin
+        if (space7<>nil) and space7.FillIndexAreas(skipped, ind, l) then exit;
+        if AddIndexArea(skipped, ind, ':', l) then exit;
+        if space8.FillIndexAreas(skipped, ind, l) then exit;
+        if ret_type.FillIndexAreas(skipped, ind, l) then exit;
+      end;
+      if header_end.FillIndexAreas(skipped, ind, l) then exit;
+      if line_break.FillIndexAreas(skipped, ind, l) then exit;
+      foreach var pfi in body.EnmrDirect do
+        if pfi.FillIndexAreas(skipped, ind, l) then exit;
+    end;
+    
+  end;
   
   {$endregion Method}
   
@@ -1044,7 +1879,7 @@ type
       inherited Create(f, text.Length);
       
       var name_section := text.TakeFirst(ind);
-      text := text.TrimStart(ind+1);
+      text := text.TrimFirst(ind+1);
       
       ind := name_section.IndexOf(char.IsWhiteSpace);
       if ind.IsInvalid then
@@ -1054,14 +1889,14 @@ type
       end else
       begin
         name := name_section.TakeFirst(ind).range;
-        space1 := new SpacingBlock(name_section.TrimStart(ind), f);
+        space1 := new SpacingBlock(name_section.TrimFirst(ind), f);
       end;
       
       space2 := SpacingBlock.ReadStart(text, f);
       
       ind := text.LastIndexOf(';');
       body_type := text.TakeFirst(ind).range;
-      line_break := new SpacingBlock(text.TrimStart(ind+1), f, #10);
+      line_break := new SpacingBlock(text.TrimFirst(ind+1), f, #10);
       
     end;
     
@@ -1145,9 +1980,10 @@ type
     private line_break2: SpacingBlock;
     
     public static body_mrcd := MidReadCreationDict.Create(nil)
-//      .Add(PFMethod.mrcd_value)
+      .Add(PFMethod.mrcd_value)
     ;
     static constructor := body_mrcd
+      //ToDo Нет, это не годится, надо PFName и затем SpacingBlock, иначе пробел после может удалить не удаляя PFName
       .Add(|'public', 'private', 'protected', 'internal'|, new MRCDValue(
         (section, text)->
         begin
@@ -1183,7 +2019,7 @@ type
       inherited Create(f, text.Length);
       
       var name_section := text.TakeFirst(ind);
-      text := text.TrimStart(ind+1);
+      text := text.TrimFirst(ind+1);
       
       space1 := SpacingBlock.ReadEnd(name_section, f);
       name := new PFTypeName(name_section, f);
@@ -1248,6 +2084,7 @@ type
     end;
     protected procedure AddDirectChildrenTo(l: VulnerableNodeList); override;
     begin
+      name.AddDirectChildrenTo(l);
       space1.AddDirectChildrenTo(l);
       space2.AddDirectChildrenTo(l);
       if type_modifiers<>nil then
@@ -1270,7 +2107,7 @@ type
       space1.UnWrapTo(tw, need_node);
       tw.Write(separator);
       space2.UnWrapTo(tw, need_node);
-      if ApplyNeedNode(type_modifiers, need_node) then
+      if (type_modifiers<>nil) and type_modifiers.CheckNeed(need_node) then
       begin
         type_modifiers.UnWrapTo(tw, need_node);
         space3.UnWrapTo(tw, need_node);
@@ -1278,7 +2115,7 @@ type
       body_type.UnWrapTo(tw, need_node);
       if space4<>nil then
         space4.UnWrapTo(tw, need_node);
-      if parents<>nil then
+      if (parents<>nil) and parents.CheckNeed(need_node) then
       begin
         tw.Write('(');
         parents.UnWrapTo(tw, need_node);
@@ -1307,7 +2144,7 @@ type
       // body_type
       if ApplyNeedNode(space4, need_node) then
         Result += space4.CountLines(need_node);
-      if ApplyNeedNode(parents, need_node) then
+      if ApplyNeedNode(parents, need_node) and parents.CheckNeed(need_node) then
         Result += parents.CountLines(need_node);
       Result += line_break1.CountLines(need_node);
       foreach var cpi in body.EnmrDirect do
@@ -1389,7 +2226,7 @@ type
       inherited Create(f, text.Length);
       
       var new_name_section := text.TakeFirst(ind);
-      text := text.TrimStart(ind+1);
+      text := text.TrimFirst(ind+1);
       
       ind := new_name_section.IndexOf(char.IsWhiteSpace);
       if ind.IsInvalid then
@@ -1399,14 +2236,14 @@ type
       end else
       begin
         new_name := new_name_section.TakeFirst(ind).range;
-        space1 := new SpacingBlock(new_name_section.TrimStart(ind), f);
+        space1 := new SpacingBlock(new_name_section.TrimFirst(ind), f);
       end;
       
       space2 := SpacingBlock.ReadStart(text, f);
       
       ind := text.LastIndexOf(';');
       org_name := text.TakeFirst(ind).range;
-      line_break := new SpacingBlock(text.TrimStart(ind+1), f, #10);
+      line_break := new SpacingBlock(text.TrimFirst(ind+1), f, #10);
       
     end;
     
@@ -1486,7 +2323,7 @@ type
       inherited Create(f, text.Length);
       
       var name_section := text.TakeFirst(ind);
-      text := text.TrimStart(ind+1);
+      text := text.TrimFirst(ind+1);
       
       ind := name_section.IndexOf(char.IsWhiteSpace);
       if ind.IsInvalid then
@@ -1496,7 +2333,7 @@ type
       end else
       begin
         name := name_section.TakeFirst(ind).range;
-        space1 := new SpacingBlock(name_section.TrimStart(ind), f);
+        space1 := new SpacingBlock(name_section.TrimFirst(ind), f);
       end;
       
       space2 := SpacingBlock.ReadStart(text, f);
@@ -1505,11 +2342,11 @@ type
       text.range.i1 += 1;
       
       ind := text.LastIndexOf(';');
-      line_break := new SpacingBlock(text.TrimStart(ind+1), f, #10);
+      line_break := new SpacingBlock(text.TrimFirst(ind+1), f, #10);
       text := text.TakeFirst(ind);
       
       ind := text.LastIndexOf(')');
-      var space3_section := text.TrimStart(ind+1);
+      var space3_section := text.TrimFirst(ind+1);
       space3 := if space3_section.Length=0 then nil else new MiscTextBlock(space3_section, f, TT_WhiteSpace);
       text := text.TakeFirst(ind);
       
@@ -1691,7 +2528,7 @@ type
     public static function MakeNew(text: StringSection; f: ParsedPasFile): ParsedFileItem;
     begin
       var ind := text.IndexOf('=');
-      var body_type_section := FindBodyTypeSection(text.TrimStart(ind+1));
+      var body_type_section := FindBodyTypeSection(text.TrimFirst(ind+1));
       
       if body_type_section.IsInvalid then
       begin
@@ -1727,7 +2564,7 @@ type
     public constructor(text: StringSection; f: ParsedPasFile);
     begin
       inherited Create(f, text.Length);
-      text := text.TrimStart(type_string.Length);
+      text := text.TrimFirst(type_string.Length);
       line_break := new SpacingBlock(text, f, #10);
     end;
     
@@ -1819,11 +2656,11 @@ type
       end else
       begin
         kw := text.TakeFirst(ind).range;
-        text := text.TrimStart(ind);
+        text := text.TrimFirst(ind);
         space1 := SpacingBlock.ReadStart(text, f);
         
         ind := text.LastIndexOf(';');
-        line_break := new SpacingBlock(text.TrimStart(ind+1), f, #10);
+        line_break := new SpacingBlock(text.TrimFirst(ind+1), f, #10);
         text := text.TakeFirst(ind);
         
         body := text.range;
@@ -1876,7 +2713,7 @@ type
       Result += line_break.FileCleanup(is_invalid);
     end;
     protected procedure AddDirectChildrenTo(l: VulnerableNodeList); override :=
-    space1.AddDirectChildrenTo(l);
+    if has_body then space1.AddDirectChildrenTo(l);
     
     public procedure UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean); override;
     begin
@@ -1899,15 +2736,20 @@ type
     
     protected procedure FillChangedSectionsBody(var skipped: integer; need_node: MinimizableNode->boolean; deleted: List<SIndexRange>; added: List<AddedText>); override;
     begin
+      skipped += kw.Length;
+      if not has_body then exit;
       space1.FillChangedSections(skipped, need_node, deleted, added);
+      skipped += body.Length;
+      skipped += 1; // ';'
       line_break.FillChangedSections(skipped, need_node, deleted, added);
     end;
     protected procedure FillIndexAreasBody(var skipped: integer; ind: StringIndex; l: List<SIndexRange>); override;
     begin
-      if not has_body then exit;
       if AddIndexArea(skipped, ind, kw, l) then exit;
+      if not has_body then exit;
       if space1.FillIndexAreas(skipped, ind, l) then exit;
       if AddIndexArea(skipped, ind, body, l) then exit;
+      if AddIndexArea(skipped, ind, ';', l) then exit;
       if line_break.FillIndexAreas(skipped, ind, l) then exit;
     end;
     
@@ -1937,13 +2779,13 @@ type
       var ind := text.IndexOf(char.IsWhiteSpace);
       if ind.IsInvalid then exit;
       var name := text.TakeFirst(ind).range;
-      text := text.TrimStart(ind);
+      text := text.TrimFirst(ind);
       
       // Find "in"
       
       var space2 := SpacingBlock.ReadStart(text, f);
       if not text.StartsWith(in_separator) then exit;
-      text := text.TrimStart(in_separator.Length);
+      text := text.TrimFirst(in_separator.Length);
       
       // Find path literal
       
@@ -2052,11 +2894,11 @@ type
     public constructor(text: StringSection; f: ParsedPasFile);
     begin
       inherited Create(f, text.Length);
-      text := text.TrimStart( uses_string.Length ); // 1 space left before unit name, same as after each ","
+      text := text.TrimFirst( uses_string.Length ); // 1 space left before unit name, same as after each ","
       
       begin
         var ind := text.LastIndexOf(';');
-        line_break := new SpacingBlock(text.TrimStart(ind+1), f, #10);
+        line_break := new SpacingBlock(text.TrimFirst(ind+1), f, #10);
         text := text.TakeFirst(ind);
       end;
       
@@ -2065,7 +2907,7 @@ type
         var ind := text.IndexOf(',');
         if ind.IsInvalid then break;
         used_units += new PFUsedUnit(text.TakeFirst(ind), f);
-        text := text.TrimStart(ind+1);
+        text := text.TrimFirst(ind+1);
       end;
       used_units += new PFUsedUnit(text, f);
       
@@ -2176,6 +3018,7 @@ type
     private static body_mrcd := MidReadCreationDict.Create(make_on_body_item)
       .Add(PFUsesSection.mrcd_value)
       .Add(PFTypeSection.mrcd_value)
+      .Add(PFMethod.mrcd_value)
       .Add(PFOperatorBlock.mrcd_value)
     ;
     
@@ -2185,7 +3028,7 @@ type
       
       var ind := text.IndexOf(char.IsWhiteSpace);
       kw := text.TakeFirst(ind).range;
-      text := text.TrimStart(ind);
+      text := text.TrimFirst(ind);
       
       line_break := new SpacingBlock(text, f, #10);
     end;
@@ -2266,6 +3109,7 @@ type
       .Add(PFUnitHalf.mrcd_value)
       .Add(PFUsesSection.mrcd_value)
       .Add(PFTypeSection.mrcd_value)
+      .Add(PFMethod.mrcd_value)
       .Add(PFOperatorBlock.mrcd_value)
     ;
     
@@ -2289,8 +3133,8 @@ begin
 end;
 procedure ParsedPasFile.AddDirectChildrenTo(l: VulnerableNodeList);
 begin
-  tokens.AddDirectChildrenTo(l);
   l += body;
+  tokens.AddDirectChildrenTo(l);
 end;
 
 procedure ParsedPasFile.UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean) :=
@@ -2328,9 +3172,9 @@ end;
 {$region PFTypeName}
 
 type
-  PFTypeName = sealed partial class(ParsedFileItem)
+  PFTypeName = sealed partial class(ParsedFileItem, INeedCheckable)
     
-    private name: string; private token: TypeToken;
+    private name: string;
     // '<'
     private generics: PFTypeNameList;
     // '>'
@@ -2347,6 +3191,7 @@ begin
     exit;
   end;
   var with_space := Result.NextWhile(text.I2, char.IsWhiteSpace);
+  //ToDo "array of array of ..." не предусмотрено
   if text.WithI1(with_space.I2).StartsWith('of') then
   begin
     with_space.range.i2 += 'of'.Length;
@@ -2458,49 +3303,38 @@ begin
   if text.Length=0 then exit;
   if not text.StartsWith('<') or not text.EndsWith('>') then raise new System.InvalidOperationException(text.ToString);
   
-  generics := new PFTypeNameList(text.TrimStart(1).TrimEnd(1), f);
+  generics := new PFTypeNameList(text.TrimFirst(1).TrimLast(1), f);
   
   foreach var (i, generic) in generics.EnmrDirect.Numerate(0) do
   begin
-    if i=token.generics.Count then token.generics += new TypeGenericToken;
-    var gtoken := token.generics[i];
+    var gtoken := token.GetToken&<TypeGenericToken>(i.ToString);
     gtoken += generic;
     generic.token += gtoken;
-    self.token.generics.Add(gtoken);
   end;
   
-end;
-
-//ToDo Костыль - надо сохранять собственность токенов в ParsedFileItem
-function PFTypeName.FileCleanup(is_invalid: MinimizableNode->boolean): StringIndex;
-begin
-  Result := inherited;
-  if Result.IsInvalid then RemoveToken(self.name, self.token);
 end;
 
 function PFTypeName.FileCleanupBody(is_invalid: MinimizableNode->boolean): StringIndex;
 begin
   Result := name.Length;
-  Result += ApplyFileCleanup(generics, is_invalid);
-  if generics=nil then
-    token.generics := nil else
+  if generics<>nil then
   begin
-    Result += 2; // '<>'
-    token.generics.RemoveAll(gtoken->is_invalid(gtoken));
+    Result += 1; // '<'
+    Result += generics.FileCleanup(is_invalid);
+    Result += 1; // '>'
   end;
 end;
 
 procedure PFTypeName.AddDirectChildrenTo(l: VulnerableNodeList);
 begin
-  l += self.token;
-  foreach var gtoken in token.generics do
-    l += gtoken; // instead of generics.AddDirectChildrenTo
+  if generics<>nil then
+    generics.AddDirectChildrenTo(l);
 end;
 
 procedure PFTypeName.UnWrapTo(tw: System.IO.TextWriter; need_node: MinimizableNode->boolean);
 begin
   tw.Write(name);
-  if ApplyNeedNode(generics, need_node) then
+  if (generics<>nil) and generics.CheckNeed(need_node) then
   begin
     tw.Write('<');
     generics.UnWrapTo(tw, need_node);
@@ -2511,7 +3345,7 @@ end;
 function PFTypeName.CountLines(need_node: MinimizableNode->boolean): integer;
 begin
   Result := 0;
-  if generics<>nil then
+  if ApplyNeedNode(generics, need_node) and generics.CheckNeed(need_node) then
     generics.CountLines(need_node);
 end;
 
