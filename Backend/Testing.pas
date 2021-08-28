@@ -3,6 +3,8 @@
 
 interface
 
+uses PathUtils  in '..\Utils\PathUtils';
+
 uses SettingData;
 
 type
@@ -67,6 +69,9 @@ type
     private comp_fname: string;
     
     private otp: CompOtp;
+    //ToDo Делать особый акцент на дополнительное тестирование если есть внутренняя ошибка компилятора
+    // - Наверное в "Visual/Minimization.pas", там проверяется, является ли эта ошибка новой
+    // - Наверное выводить мэссэджбокс предлогающий дальнейшее тестирование
     private inner_err: string;
     private is_module: boolean;
     
@@ -241,9 +246,17 @@ type
     private procedure Test;
     begin
       var MaxExecTime := Settings.Current.MaxExecTime;
-      var full_target_fname := System.IO.Path.GetFullPath(System.IO.Path.Combine(dir,target_fname));
       
-      var psi := new System.Diagnostics.ProcessStartInfo(GetEXEFileName, $'"ExecTest={full_target_fname}" "MaxExecTime={MaxExecTime}"');
+      var full_target_fname := GetFullPath(target_fname, dir);
+      var fname_dir := System.IO.Path.GetDirectoryName(full_target_fname);
+      if System.Reflection.Assembly.GetEntryAssembly.GetType('Testing.ExecResult') = nil then
+        raise new System.NotSupportedException(System.Reflection.Assembly.GetEntryAssembly.FullName+#10+System.Reflection.Assembly.GetEntryAssembly.GetTypes.JoinToString(#10));
+      var executor_org_fname := System.Reflection.Assembly.GetEntryAssembly.Location;
+      var executor_fname := GetFullPath(System.IO.Path.GetFileName(executor_org_fname), fname_dir);
+      if executor_org_fname<>executor_fname then
+        System.IO.File.Copy(executor_org_fname, executor_fname, false);
+      
+      var psi := new System.Diagnostics.ProcessStartInfo(executor_fname, $'"ExecTest={full_target_fname}" "MaxExecTime={MaxExecTime}"');
       psi.UseShellExecute := false;
       psi.CreateNoWindow := true;
       psi.RedirectStandardOutput := true;
@@ -257,8 +270,12 @@ type
         self.err := new ExceptionContainer;
         self.err.AllText := 'Execution took too long';
         p.WaitForExit;
+        if executor_org_fname<>executor_fname then
+          System.IO.File.Delete(executor_fname);
         exit;
       end;
+      if executor_org_fname<>executor_fname then
+        System.IO.File.Delete(executor_fname);
       
       self.otp := p.StandardOutput.ReadToEnd.Trim;
       var err := p.StandardError.ReadToEnd;
@@ -312,7 +329,7 @@ type
     
     public function GetShortDescription: string; override :=
     if err=nil then otp else
-    $'{err.ErrType<>nil ? err.ErrType : err.GetType.ToString}: {err.Message<>nil ? err.Message : err.AllText}';
+    $'{err.ErrType<>nil ? err.ErrType : err.GetType.ToString}: {err.AllText}';
     
     public static function AreSame(etr1, etr2: ExecResult): boolean;
     begin
@@ -352,26 +369,27 @@ end;
 
 begin
   try
-    if GetArgs('ExecTest').SingleOrDefault is string(var fname) then
-    begin
-      var halt_thr := new System.Threading.Thread(EmergencyThreadBody);
-      halt_thr.IsBackground := true;
-      halt_thr.Start;
-      
-      Console.SetIn(new System.IO.StringReader(''));
-      var ep := System.Reflection.Assembly.LoadFile(fname).EntryPoint;
-      try
-        ep.Invoke(nil, new object[0]);
-      except
-        on e: Exception do
-        begin
-          {$reference System.Xml.dll}
-          var s := new System.Xml.Serialization.XmlSerializer(typeof(ExceptionContainer));
-          s.Serialize(Console.Error, new ExceptionContainer(e));
+    if System.Reflection.Assembly.GetEntryAssembly = System.Reflection.Assembly.GetExecutingAssembly then
+      if GetArgs('ExecTest').SingleOrDefault is string(var fname) then
+      begin
+        var halt_thr := new System.Threading.Thread(EmergencyThreadBody);
+        halt_thr.IsBackground := true;
+        halt_thr.Start;
+        
+        Console.SetIn(new System.IO.StringReader(''));
+        var ep := System.Reflection.Assembly.LoadFile(fname).EntryPoint;
+        try
+          ep.Invoke(nil, new object[0]);
+        except
+          on e: Exception do
+          begin
+            {$reference System.Xml.dll}
+            var s := new System.Xml.Serialization.XmlSerializer(typeof(ExceptionContainer));
+            s.Serialize(Console.Error, new ExceptionContainer(e));
+          end;
         end;
+        Halt;
       end;
-      Halt;
-    end;
   except
     on e: Exception do
       MessageBox.Show(e.ToString);

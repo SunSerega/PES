@@ -18,6 +18,7 @@ type
   
   /// Все тесты (компиляция, запуск) для комбинации файла и компилятора
   BucketBatchTestViewer = sealed class(Border)
+    //ToDo А что оно делает собственно?
     private static test_mres := new Queue<System.Threading.ManualResetEvent>;
     private static curr_executing_c := 0;
     
@@ -96,6 +97,7 @@ type
         end;
         
       except
+        //ToDo Сейчас зелёный прогресс бар справа замерзает если ошибка, может удалять тест после того как мессджбокс закрылся?
         on e: Exception do MessageBox.Show(e.ToString);
       end).Start;
       
